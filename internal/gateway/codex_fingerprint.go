@@ -201,9 +201,10 @@ func codexTransportWithUTLS(wait time.Duration) *http.Transport {
 // Example:
 //   codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
 func mimicCodexHeaders(h http.Header) {
-	// Codex CLI's User-Agent
-	// If not set, use a generic one that matches the format
-	if h.Get("User-Agent") == "" {
+	// Remove Go's default User-Agent to avoid revealing we're a Go program
+	// Codex CLI's User-Agent format: {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+	ua := h.Get("User-Agent")
+	if ua == "" || strings.HasPrefix(ua, "Go-http-client/") {
 		// Default to codex_cli_rs originator (from DEFAULT_ORIGINATOR)
 		// OS info should match the actual system
 		h.Set("User-Agent", buildCodexUserAgent())
@@ -219,6 +220,7 @@ func mimicCodexHeaders(h http.Header) {
 		h.Set("Accept-Language", "en-US,en;q=0.9")
 	}
 
+	// Remove Go's default Accept-Encoding to avoid revealing we're a Go program
 	// Codex CLI doesn't send Accept-Encoding (let the transport handle it)
 	h.Del("Accept-Encoding")
 

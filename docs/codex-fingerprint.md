@@ -100,14 +100,23 @@ format!(
 )
 ```
 
+**Go 的默认指纹**：
+Go 的 `net/http` 默认会发送以下指纹特征，会暴露我们是 Go 程序：
+```
+User-Agent: Go-http-client/1.1
+Accept-Encoding: gzip
+```
+
 **magpie 优化后**：
+- **移除 Go 的默认指纹**：
+  - 替换 `User-Agent: Go-http-client/1.1` 为 Codex 的格式
+  - 移除 `Accept-Encoding: gzip`（让 transport 处理）
 - **智能指纹选择**：根据请求来源决定是否使用伪装指纹
   - **Codex 客户端**：使用 Codex 的真实指纹（rustls）
   - **非 Codex 客户端**：使用伪装的 Codex 指纹（避免被识别为机器人）
 - 透传 Codex 的 User-Agent，或生成匹配的格式
 - 添加缺失的 Accept、Accept-Language、Cache-Control、Pragma
 - 添加 originator 头
-- 移除 Accept-Encoding（让 transport 处理）
 - 移除可能暴露 magpie 的自定义头
 
 ### 4. 连接行为
