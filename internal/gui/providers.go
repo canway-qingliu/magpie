@@ -175,7 +175,11 @@ type providerJSON struct {
 	BalanceURL    string `json:"balanceURL,omitempty"`
 	BalancePath   string `json:"balancePath,omitempty"`
 	BalanceMethod string `json:"balanceMethod,omitempty"`
-	ModelsURL     string `json:"modelsURL,omitempty"`
+	// the query magpie found by itself for a relay added by hand with no
+	// Balance URL, and its field (provider.BalanceFound)
+	BalanceFound      string `json:"balanceFound,omitempty"`
+	BalanceFoundField string `json:"balanceFoundField,omitempty"`
+	ModelsURL         string `json:"modelsURL,omitempty"`
 	// an account-wide balance token (provider.BalanceToken): whether the
 	// vendor takes one, and whether one is saved; never the token itself
 	BalanceToken struct {
@@ -297,6 +301,13 @@ type providerJSON struct {
 	Exposed   int         `json:"exposed"`           // how many reach the agents
 	Draws     int         `json:"draws,omitempty"`   // how many of its models draw images (gateway.Drawers)
 	DrawIDs   []string    `json:"drawIds,omitempty"` // those models' ids, listed apart in its editor
+	// the names those are shown by where one isn't its id: a ChatGPT
+	// account's gpt-image-2 is its one GPT Image, whichever model its
+	// backend draws with (StarBits on X read the id as an old model)
+	DrawNames map[string]string `json:"drawNames,omitempty"`
+	// its vendor draws with the model it picks, whichever is named: a
+	// ChatGPT account's one GPT Image (gateway.VendorPicksDrawer)
+	DrawPicks bool `json:"drawPicks,omitempty"`
 	// those of them unticked in its editor (provider.HiddenDrawers)
 	HiddenDrawers []string `json:"hiddenDrawers,omitempty"`
 	// its video models (gateway.Videomakers), listed apart in its editor
@@ -729,6 +740,9 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			}
 		}
 	}
+	if p.BalanceURL == "" {
+		out.BalanceFound, out.BalanceFoundField, _ = provider.BalanceFound(p)
+	}
 	if out.Fallback == nil {
 		out.Fallback = []string{}
 	}
@@ -1014,8 +1028,15 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	// lists them apart, as Settings → Images is where one is picked
 	for _, m := range gateway.DrawersOf(p, func() []catalog.Model { return ls.Available }) {
 		out.DrawIDs = append(out.DrawIDs, m.ID)
+		if m.Name != "" && m.Name != m.ID {
+			if out.DrawNames == nil {
+				out.DrawNames = map[string]string{}
+			}
+			out.DrawNames[m.ID] = m.Name
+		}
 	}
 	out.Draws = len(out.DrawIDs)
+	out.DrawPicks = out.Draws > 0 && gateway.VendorPicksDrawer(p)
 	for _, id := range out.DrawIDs {
 		if p.DrawerHidden(id) {
 			out.HiddenDrawers = append(out.HiddenDrawers, id)
@@ -2405,6 +2426,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			out := map[string]any{"ok": ok, "amount": amount}
 			if err != nil {
 				out["error"] = err.Error()
+			}
+			if u, field, looked := provider.BalanceFound(q); looked {
+				// asked where relays tell a key its balance: where, or that
+				// neither told it
+				out["looked"], out["found"], out["foundField"] = true, u, field
 			}
 			writeJSON(rw, out)
 			return
