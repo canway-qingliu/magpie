@@ -1679,7 +1679,10 @@ func loadChecked() (Settings, error) {
 // what `magpie settings list` shows as each one's default, and what
 // `magpie settings reset` puts back.
 func Defaults() Settings {
-	return Settings{DockSettled: true}.normal()
+	return Settings{
+		DockSettled:  true,
+		NoAutoUpdate: true, // Disable automatic update checks by default
+	}.normal()
 }
 
 // settleDock reads a Dock choice written before With window was the

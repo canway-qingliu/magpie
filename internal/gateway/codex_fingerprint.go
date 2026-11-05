@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -134,12 +135,12 @@ func codexTransport(wait time.Duration) *http.Transport {
 		Proxy:                 netproxy.Func,
 		ResponseHeaderTimeout: wait,
 		// Codex CLI uses a larger connection pool
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       120 * time.Second,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     120 * time.Second,
 		// Enable HTTP/2
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       codexTLSConfig(),
-		HTTP2:                 codexHTTP2Config(),
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   codexTLSConfig(),
+		HTTP2:             codexHTTP2Config(),
 		// Codex CLI's TCP keep-alive
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -187,8 +188,8 @@ func codexTransportWithUTLS(wait time.Duration) *http.Transport {
 		IdleConnTimeout:       120 * time.Second,
 		ForceAttemptHTTP2:     true,
 		// Use uTLS dialer instead of TLSClientConfig
-		DialContext:           codexUTLSDialer(),
-		HTTP2:                 codexHTTP2Config(),
+		DialContext: codexUTLSDialer(),
+		HTTP2:       codexHTTP2Config(),
 	}
 }
 
@@ -196,13 +197,17 @@ func codexTransportWithUTLS(wait time.Duration) *http.Transport {
 // This helps avoid detection by Cloudflare and other bot protection services.
 //
 // Codex CLI's User-Agent format (from codex-rs/login/src/auth/default_client.rs):
-//   {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+//
+//	{originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+//
 // Example:
-//   codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
+//
+//	codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
 func mimicCodexHeaders(h http.Header) {
-	// Codex CLI's User-Agent
-	// If not set, use a generic one that matches the format
-	if h.Get("User-Agent") == "" {
+	// Remove Go's default User-Agent to avoid revealing we're a Go program
+	// Codex CLI's User-Agent format: {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+	ua := h.Get("User-Agent")
+	if ua == "" || strings.HasPrefix(ua, "Go-http-client/") {
 		// Default to codex_cli_rs originator (from DEFAULT_ORIGINATOR)
 		// OS info should match the actual system
 		h.Set("User-Agent", buildCodexUserAgent())
@@ -218,6 +223,7 @@ func mimicCodexHeaders(h http.Header) {
 		h.Set("Accept-Language", "en-US,en;q=0.9")
 	}
 
+	// Remove Go's default Accept-Encoding to avoid revealing we're a Go program
 	// Codex CLI doesn't send Accept-Encoding (let the transport handle it)
 	h.Del("Accept-Encoding")
 
@@ -239,6 +245,16 @@ func mimicCodexHeaders(h http.Header) {
 	// Remove headers that might reveal magpie's presence
 	h.Del("X-Magpie-Version")
 	h.Del("X-Magpie-Build")
+}
+
+// isCodexClient returns true if the request is from Codex CLI itself.
+// This is determined by checking the User-Agent header for Codex's signature.
+func isCodexClient(r *http.Request) bool {
+	ua := r.Header.Get("User-Agent")
+	// Codex CLI's User-Agent starts with "codex_cli_rs/" or contains "codex"
+	// (from codex-rs/login/src/auth/default_client.rs)
+	return strings.HasPrefix(ua, "codex_cli_rs/") ||
+		strings.Contains(strings.ToLower(ua), "codex")
 }
 
 // buildCodexUserAgent constructs a User-Agent string that matches Codex CLI's format.

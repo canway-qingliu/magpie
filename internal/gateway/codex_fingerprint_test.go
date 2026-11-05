@@ -88,6 +88,10 @@ func TestMimicCodexHeaders(t *testing.T) {
 	if !strings.Contains(ua, "(") || !strings.Contains(ua, ")") {
 		t.Errorf("Expected User-Agent to contain OS info in parentheses, got %v", ua)
 	}
+	// Verify Go's default User-Agent is removed
+	if strings.HasPrefix(ua, "Go-http-client/") {
+		t.Errorf("Expected Go's default User-Agent to be removed, got %v", ua)
+	}
 
 	// Verify Accept
 	if h.Get("Accept") != "application/json" {
@@ -117,6 +121,29 @@ func TestMimicCodexHeaders(t *testing.T) {
 	// Verify Accept-Encoding is removed
 	if h.Get("Accept-Encoding") != "" {
 		t.Error("Expected Accept-Encoding to be removed")
+	}
+}
+
+func TestMimicCodexHeadersRemovesGoFingerprint(t *testing.T) {
+	h := http.Header{}
+	// Set Go's default headers
+	h.Set("User-Agent", "Go-http-client/1.1")
+	h.Set("Accept-Encoding", "gzip")
+
+	mimicCodexHeaders(h)
+
+	// Verify Go's User-Agent is replaced
+	ua := h.Get("User-Agent")
+	if strings.HasPrefix(ua, "Go-http-client/") {
+		t.Errorf("Expected Go's User-Agent to be replaced, got %v", ua)
+	}
+	if !strings.Contains(ua, "codex_cli_rs/") {
+		t.Errorf("Expected User-Agent to contain 'codex_cli_rs/', got %v", ua)
+	}
+
+	// Verify Go's Accept-Encoding is removed
+	if h.Get("Accept-Encoding") != "" {
+		t.Errorf("Expected Accept-Encoding to be removed, got %v", h.Get("Accept-Encoding"))
 	}
 }
 
@@ -234,5 +261,59 @@ func TestCodexTransportWithUTLS(t *testing.T) {
 	}
 	if transport.HTTP2 == nil {
 		t.Error("Expected HTTP2 to be set")
+	}
+}
+
+func TestIsCodexClient(t *testing.T) {
+	tests := []struct {
+		name     string
+		ua       string
+		expected bool
+	}{
+		{
+			name:     "Codex CLI User-Agent",
+			ua:       "codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0",
+			expected: true,
+		},
+		{
+			name:     "Codex in User-Agent",
+			ua:       "Some App with codex/1.0",
+			expected: true,
+		},
+		{
+			name:     "Codex CLI lowercase",
+			ua:       "codex_cli_rs/0.163.0",
+			expected: true,
+		},
+		{
+			name:     "Non-Codex User-Agent",
+			ua:       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+			expected: false,
+		},
+		{
+			name:     "Empty User-Agent",
+			ua:       "",
+			expected: false,
+		},
+		{
+			name:     "Claude Code User-Agent",
+			ua:       "claude-cli/1.0.0",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest("GET", "http://example.com", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("User-Agent", tt.ua)
+
+			got := isCodexClient(req)
+			if got != tt.expected {
+				t.Errorf("isCodexClient(%q) = %v, expected %v", tt.ua, got, tt.expected)
+			}
+		})
 	}
 }
