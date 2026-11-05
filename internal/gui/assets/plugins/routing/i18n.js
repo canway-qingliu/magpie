@@ -48,6 +48,8 @@ magpie.strings({
     "{name} is switched off: the group skips it until it is on again": "{name} 已关闭：开启前这个组会跳过它",
     "{n} switched off": "{n} 个已关闭",
     "Off: agents aren't offered {name} and a request to it is turned away. Click to switch it on": "已关闭：Agent 列表里没有 {name}，发给它的请求会被拒绝。点击打开",
+    "retry on 502": "502 时重试",
+    "When the model answers 502 Bad Gateway, retry the same account instead of failing over to the next one — useful for Codex's busy backend": "当模型返回 502 Bad Gateway 时，在原账号上重试而不是切换到下一个账号——适用于 Codex 繁忙的后端",
     "On: agents may pick {name}. Click to switch it off and keep it as it is": "已打开：Agent 可以选用 {name}。点击暂时关闭，组的设置原样保留",
     "{name} switched on": "已打开 {name}",
     "{name} switched off": "已关闭 {name}",

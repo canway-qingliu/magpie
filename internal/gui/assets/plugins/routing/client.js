@@ -7222,6 +7222,7 @@ function routingPage(part) {
       ["images", "has an image", false],
       ["effort", "Reasoning level", false],
       ["compact", "compacting", false],
+      ["retryOn502", "retry on 502", false],
       ["agents", "Agents", true],
       ["folders", "in folder", true],
       ["exceptFolders", "not in folder", true],
@@ -7230,10 +7231,10 @@ function routingPage(part) {
     const condSet = (r, k) => k === "time" ? !!(r.time && (r.time.from || r.time.to || r.time.days?.length))
       : Array.isArray(r[k]) ? r[k].length > 0 : !!r[k];
     // a condition taken off is the value saved for none, as before
-    const condNone = { intent: "", tokens: 0, images: false, effort: "", compact: false, agents: [], folders: [], exceptFolders: [], time: null };
+    const condNone = { intent: "", tokens: 0, images: false, effort: "", compact: false, retryOn502: false, agents: [], folders: [], exceptFolders: [], time: null };
     const addCond = (r, k) => {
       openedOf(r).add(k);
-      if (k === "images" || k === "compact") r[k] = true;
+      if (k === "images" || k === "compact" || k === "retryOn502") r[k] = true;
       if (k === "intent" && !d.classifier && deciders.length) d.classifier = deciders[0].id;
       focusCond = { r, k };
       drawRules();
@@ -7415,6 +7416,15 @@ function routingPage(part) {
           cp.onclick = () => { r.compact = !r.compact; cp.classList.toggle("on", r.compact); warn(); };
           wrap("compact", cp);
           if (mine === "compact") focus = () => cp.focus({ preventScroll: true });
+        }
+        // retryOn502: retry the same account on 502 Bad Gateway instead of
+        // failing over to the next one (useful for Codex's busy backend)
+        if (kinds.includes("retryOn502")) {
+          const r5 = el("button", "rt-cond" + (r.retryOn502 ? " on" : ""), t("retry on 502"));
+          r5.title = t("When the model answers 502 Bad Gateway, retry the same account instead of failing over to the next one — useful for Codex's busy backend");
+          r5.onclick = () => { r.retryOn502 = !r.retryOn502; r5.classList.toggle("on", r.retryOn502); warn(); };
+          wrap("retryOn502", r5);
+          if (mine === "retryOn502") focus = () => r5.focus({ preventScroll: true });
         }
         // agents: the ones magpie knows, the others it has heard from, and
         // any typed by the name the gateway gives a client it doesn't know
