@@ -22,6 +22,30 @@ authors whose PRs are closed on sight.
 Before changing code, read [LESSONS.md](LESSONS.md): what recent merged
 work got wrong and the rule that would have caught it.
 
+## Upstream and fork branches
+
+This checkout uses `origin` for the upstream repository
+(`yetone/magpie`) and `fork` for the personal fork. Check `git remote -v`
+before pushing if either remote may have changed.
+
+- Treat `origin/main` as the upstream source of truth. Fetch it before
+  starting work or syncing: `git fetch origin --tags`.
+- Keep personal changes on the fork's `main` or on named `feature/*`
+  branches. Do not commit personal changes directly to `origin/main`.
+- Start a feature intended for an upstream PR from the latest
+  `origin/main`, then push that feature branch to `fork`:
+  `git switch -c feature/<name> origin/main` and
+  `git push -u fork feature/<name>`. Keep the PR branch limited to that
+  feature.
+- To bring upstream changes into a personal branch, merge the fetched
+  `origin/main` into it, resolve conflicts, and push to `fork`. Prefer merge
+  for branches already pushed or shared; do not reset a personal branch to
+  `origin/main`, since that discards fork-only commits.
+- Build a personal version from the intended personal branch or commit, and
+  give it a distinct version label. Do not label fork builds with an
+  upstream release version unless the source commit and release process
+  meet the release requirements in [code standards](docs/code-standards.md).
+
 ## Built-in subscriptions that a plugin serves
 
 These built-in subscriptions are retired. Reaching them can break their
