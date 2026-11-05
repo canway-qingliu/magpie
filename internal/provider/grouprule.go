@@ -80,6 +80,11 @@ type Rule struct {
 	// Codex's, OpenCode's, Pi's…) — which a cheaper, faster model can do
 	// in place of the one the conversation is on.
 	Compact bool `json:"compact,omitempty"`
+	// RetryOn502: when the member answers 502 Bad Gateway, retry the same
+	// member instead of failing over to the next one. This is useful for
+	// Codex's own models, which may return 502 when the backend is busy
+	// but can succeed on retry.
+	RetryOn502 bool `json:"retryOn502,omitempty"`
 	// Time: the turn begins within these hours of the day, in the window's
 	// zone (TimeWindow.Zone) — a vendor's peak-price hours sent to another,
 	// say.

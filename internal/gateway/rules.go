@@ -75,6 +75,9 @@ type RuleHit struct {
 	// UseEffort: the reasoning the rule asks the member it names for
 	// (provider.Rule.UseEffort, #2633), in place of the agent's
 	UseEffort string `json:"useEffort,omitempty"`
+	// RetryOn502: when the member answers 502 Bad Gateway, retry the same
+	// member instead of failing over to the next one (provider.Rule.RetryOn502)
+	RetryOn502 bool `json:"retryOn502,omitempty"`
 	// members are the models of the member the rule names, as the group
 	// whose rule it is has them (ruleOver): who UseEffort is for
 	members []provider.Member
@@ -222,6 +225,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			hit.Then = provider.ThenUses(g.Rules, q, hit.N, hit.uses())
 			if hit.N <= len(g.Rules) {
 				hit.UseEffort = g.Rules[hit.N-1].UseEffort // and how hard it asks it to think
+				hit.RetryOn502 = g.Rules[hit.N-1].RetryOn502 // and whether to retry on 502
 			}
 		}
 	}()
