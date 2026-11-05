@@ -71,13 +71,13 @@ func vendorTransport(wait time.Duration) *http.Transport {
 		Proxy:                 netproxy.Func,
 		ResponseHeaderTimeout: wait,
 		// Codex CLI uses a larger connection pool
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       120 * time.Second,
-		ForceAttemptHTTP2:     true,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     120 * time.Second,
+		ForceAttemptHTTP2:   true,
 		// Use Chrome's TLS fingerprint to avoid Cloudflare detection
-		TLSClientConfig:       codexTLSConfig(),
+		TLSClientConfig: codexTLSConfig(),
 		// Codex CLI's HTTP/2 settings
-		HTTP2:                 codexHTTP2Config(),
+		HTTP2: codexHTTP2Config(),
 		// Codex CLI's TCP keep-alive
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,

@@ -135,12 +135,12 @@ func codexTransport(wait time.Duration) *http.Transport {
 		Proxy:                 netproxy.Func,
 		ResponseHeaderTimeout: wait,
 		// Codex CLI uses a larger connection pool
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       120 * time.Second,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     120 * time.Second,
 		// Enable HTTP/2
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       codexTLSConfig(),
-		HTTP2:                 codexHTTP2Config(),
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   codexTLSConfig(),
+		HTTP2:             codexHTTP2Config(),
 		// Codex CLI's TCP keep-alive
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -188,8 +188,8 @@ func codexTransportWithUTLS(wait time.Duration) *http.Transport {
 		IdleConnTimeout:       120 * time.Second,
 		ForceAttemptHTTP2:     true,
 		// Use uTLS dialer instead of TLSClientConfig
-		DialContext:           codexUTLSDialer(),
-		HTTP2:                 codexHTTP2Config(),
+		DialContext: codexUTLSDialer(),
+		HTTP2:       codexHTTP2Config(),
 	}
 }
 
@@ -197,9 +197,12 @@ func codexTransportWithUTLS(wait time.Duration) *http.Transport {
 // This helps avoid detection by Cloudflare and other bot protection services.
 //
 // Codex CLI's User-Agent format (from codex-rs/login/src/auth/default_client.rs):
-//   {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+//
+//	{originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
+//
 // Example:
-//   codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
+//
+//	codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
 func mimicCodexHeaders(h http.Header) {
 	// Remove Go's default User-Agent to avoid revealing we're a Go program
 	// Codex CLI's User-Agent format: {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
