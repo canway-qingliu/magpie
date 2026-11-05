@@ -8456,7 +8456,8 @@ function iconPicker(ed) {
         for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
         const data = await api("icons", { data: btoa(bin) });
         draft.icon = data.icon;
-        draft.iconFrom = "";
+        draft.iconFrom = typed = "";
+        asking = false;
         editorError("");
         draw();
         syncHead();
@@ -8466,8 +8467,7 @@ function iconPicker(ed) {
     };
     const choose = el("button", "text", t("Choose a picture…"));
     choose.onclick = () => file.click();
-    // the site's own icon (as before), a picture's address, or the name's
-    // letters on a tile: many sites have no /favicon.ico (usrname1833)
+    // the site's icon, a picture's address or the name's letters (usrname1833)
     const base = () => draft[apiField[draft.api]] || draft.chat || draft.responses || draft.anthropic || "";
     const site = el("button", "text", t("Get icon"));
     site.setAttribute("aria-haspopup", "menu");
@@ -8481,9 +8481,11 @@ function iconPicker(ed) {
       try {
         const data = await api(path, { name: draft.name || "", ...body });
         draft.icon = data.icon;
-        draft.iconFrom = body.url && !data.failed ? body.url : "";
+        // a typed address only, not the base URL (Refeccd)
+        const u = path === "icons/url" && body.url;
+        draft.iconFrom = u && !data.failed ? u : "";
         if (data.failed) note = t("That picture couldn't be used, so the icon is the name's letters: {why}", { why: data.failed });
-        asking = !!body.url;
+        if (!(asking = !!u)) typed = "";
         ok = !data.failed;
       } catch (e) {
         note = e.message;
@@ -8549,7 +8551,7 @@ function iconPicker(ed) {
         const b = el("button", n === draft.icon ? "on" : "");
         b.title = n.replace(/-color$/, "");
         b.append(icon(n));
-        b.onclick = () => { draft.icon = n; draft.iconFrom = ""; open = false; draw(); syncHead(); };
+        b.onclick = () => { draft.icon = n; draft.iconFrom = typed = ""; asking = open = false; draw(); syncHead(); };
         grid.append(b);
       }
       box.append(find, grid);
@@ -15735,21 +15737,18 @@ if (mode === "panel") { const none = [], k = kept("panelQuotas", none); if (k !=
 let quotaHist = []; // each account's windows over time, for the curves (#651)
 // quotasOpened: the reader opened what shows the allowances (the Usage
 // page's Overview, the tray panel's Allowances tab, a menu bar cell, either
-// brought back to the front), which is asking to see them now (#1588,
-// qq666666qq), as Refresh now is: an asked read, the one that goes out
-// with allowances read only when asked (#1518). Each one asked makes the
-// backend read every account again, so opening within QUOTAS_OPEN_GAP of
-// the last asked read (switching tabs and back, the window's focus and
-// visibility both firing, focus-follows-mouse) asks nothing: it takes what
-// is kept, or the read on its way. Refresh now asks every time.
+// brought back to the front): an asked read (#1588, #1518), which reads
+// every account again, so opening within QUOTAS_OPEN_GAP of the last one
+// (tabs, focus and visibility both firing) asks nothing. Refresh always
+// asks, saved Claude accounts too ("all", #5380).
 const QUOTAS_OPEN_GAP = 30e3;
 let quotasAskedAt = -Infinity;
 function quotasOpened() {
   return loadQuotas(performance.now() - quotasAskedAt >= QUOTAS_OPEN_GAP);
 }
 
-// An asked load is never swallowed by one already on its way that wasn't:
-// it goes after it.
+// A load is never swallowed by a lesser one on its way (asked over none,
+// "all" over both): it goes after it.
 // An answer said to be read while the accounts' usage is being read again
 // (X-Magpie-Reading) can be the stale copy that read replaces: it is asked
 // for again, every 1.5s for half a minute at most, until the new one has
@@ -15759,7 +15758,8 @@ let quotasLoading = null, quotasLater = 0, quotasTries = 0;
 let quotaRefreshVersion = 0;
 const quotaRefreshVersions = new Map();
 function loadQuotas(asked, again) {
-  if (quotasLoading && (!asked || quotasLoading.asked)) return quotasLoading;
+  const r = (a) => (a === "all" ? 2 : +!!a);
+  if (quotasLoading && r(asked) <= r(quotasLoading.asked)) return quotasLoading;
   if (asked) { quotasAskedAt = performance.now(); quotaCycleHolds.clear(); }
   if (!again) quotasTries = 0;
   let reading = false, same = false, began;
@@ -15769,7 +15769,7 @@ function loadQuotas(asked, again) {
       // the curves come on their own: the allowances now never wait for
       // them (a remote magpie's history can take seconds; #3192)
       loadQuotaHist();
-      return api("usage/quotas" + (asked ? "?asked=1" : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; });
+      return api("usage/quotas" + (asked ? "?asked=1" + (asked === "all" ? "&all=1" : "") : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; });
     })
     .then((q) => {
       // an answer that isn't a list of cards is a read that failed: what
@@ -15789,7 +15789,7 @@ function loadQuotas(asked, again) {
       if (view === "usage") loadUpstream();
       if (reading && !quotasLater && ++quotasTries <= 20) quotasLater = setTimeout(() => { quotasLater = 0; loadQuotas(false, true); }, 1500);
     });
-  p.asked = !!asked;
+  p.asked = asked;
   quotasLoading = p;
   return p;
 }
@@ -21679,10 +21679,10 @@ function renderReplies(s, keep) {
   const c = segRow("claudeLeanRow", t("Short Claude system prompt"),
     t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk"),
     onOff, s.claudeLeanPrompt ? "on" : "off", (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" }));
-  // a Claude run as Claude Code's interactive mode, -p when off (the plan
-  // counts a -p request at about twice); on, nothing is ever -p
+  // Claude Code's interactive mode, -p when off (2x the plan's count);
+  // on, -p only for a prompt Anthropic refused there (#4503)
   const u = segRow("claudeTuiRow", t("Claude Code's interactive mode"),
-    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. On, no request ever runs as -p. Off runs every request as claude -p"),
+    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. On, a request runs as -p only when Anthropic refuses its agent's prompt there. Off runs every request as claude -p"),
     onOff, s.claudePrintMode ? "off" : "on", (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off" }); });
   box.append(r, l, f, k, c, u);
 }
@@ -23387,7 +23387,7 @@ async function refreshPage(kind) {
       await magpie.call("usage", "reload");
       return t("Usage refreshed");
     case "allowances":
-      await loadQuotas(true);
+      await loadQuotas("all");
       return t("Allowances refreshed");
     case "requests":
       await loadPanelUse();
