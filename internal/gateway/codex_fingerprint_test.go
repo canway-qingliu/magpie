@@ -88,6 +88,10 @@ func TestMimicCodexHeaders(t *testing.T) {
 	if !strings.Contains(ua, "(") || !strings.Contains(ua, ")") {
 		t.Errorf("Expected User-Agent to contain OS info in parentheses, got %v", ua)
 	}
+	// Verify Go's default User-Agent is removed
+	if strings.HasPrefix(ua, "Go-http-client/") {
+		t.Errorf("Expected Go's default User-Agent to be removed, got %v", ua)
+	}
 
 	// Verify Accept
 	if h.Get("Accept") != "application/json" {
@@ -117,6 +121,29 @@ func TestMimicCodexHeaders(t *testing.T) {
 	// Verify Accept-Encoding is removed
 	if h.Get("Accept-Encoding") != "" {
 		t.Error("Expected Accept-Encoding to be removed")
+	}
+}
+
+func TestMimicCodexHeadersRemovesGoFingerprint(t *testing.T) {
+	h := http.Header{}
+	// Set Go's default headers
+	h.Set("User-Agent", "Go-http-client/1.1")
+	h.Set("Accept-Encoding", "gzip")
+
+	mimicCodexHeaders(h)
+
+	// Verify Go's User-Agent is replaced
+	ua := h.Get("User-Agent")
+	if strings.HasPrefix(ua, "Go-http-client/") {
+		t.Errorf("Expected Go's User-Agent to be replaced, got %v", ua)
+	}
+	if !strings.Contains(ua, "codex_cli_rs/") {
+		t.Errorf("Expected User-Agent to contain 'codex_cli_rs/', got %v", ua)
+	}
+
+	// Verify Go's Accept-Encoding is removed
+	if h.Get("Accept-Encoding") != "" {
+		t.Errorf("Expected Accept-Encoding to be removed, got %v", h.Get("Accept-Encoding"))
 	}
 }
 
