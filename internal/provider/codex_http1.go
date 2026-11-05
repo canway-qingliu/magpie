@@ -17,6 +17,9 @@ func init() { netproxy.HTTP1 = codexBackend }
 // X, "stream ID 21; INTERNAL_ERROR; received from peer"), and through a
 // local proxy a request failed with PROTOCOL_ERROR until HTTP/2 was turned
 // off.
+//
+// Note: We keep HTTP/1.1 for the ChatGPT backend due to these known issues,
+// but we optimize the TLS fingerprint and other headers to mimic Codex CLI.
 func codexBackend(u *url.URL) bool {
 	b, err := url.Parse(CodexBase)
 	return err == nil && u.Host == b.Host
