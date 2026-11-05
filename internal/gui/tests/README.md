@@ -2133,10 +2133,12 @@ independent and run a few at a time (`UI_TEST_CONCURRENCY`, default 2); set
 make test-ui
 ```
 
-If Playwright is installed outside the repository, set `NODE_PATH` to the
-directory containing its package. The suite uses Playwright's Chromium and
-WebKit binaries (`playwright install chromium webkit`). No frontend dependency
-is needed by the app itself. Tested with Playwright 1.62.1.
+The repository's root `package.json` carries Playwright, the suite's only
+dependency: `npm ci` installs it, then `npx playwright install chromium
+webkit` brings the two engines' binaries. If Playwright is installed outside
+the repository instead, set `NODE_PATH` to the directory containing its
+package. No frontend dependency is needed by the app itself. Tested with
+Playwright 1.64.1.
 
 For the callback test, `PLAYWRIGHT_CHANNEL=chrome` uses an installed Chrome
 instead of Playwright's Chromium.
