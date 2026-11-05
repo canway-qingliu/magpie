@@ -101,6 +101,9 @@ format!(
 ```
 
 **magpie 优化后**：
+- **智能指纹选择**：根据请求来源决定是否使用伪装指纹
+  - **Codex 客户端**：使用 Codex 的真实指纹（rustls）
+  - **非 Codex 客户端**：使用伪装的 Codex 指纹（避免被识别为机器人）
 - 透传 Codex 的 User-Agent，或生成匹配的格式
 - 添加缺失的 Accept、Accept-Language、Cache-Control、Pragma
 - 添加 originator 头
@@ -128,7 +131,7 @@ DialContext: (&net.Dialer{
 
 ### 文件
 
-- `internal/gateway/codex_fingerprint.go` - 指纹配置（包括 uTLS 集成）
+- `internal/gateway/codex_fingerprint.go` - 指纹配置（包括 uTLS 集成和智能指纹选择）
 - `internal/gateway/codex_fingerprint_test.go` - 测试
 - `internal/gateway/upstream_transport.go` - 应用指纹配置
 - `internal/gateway/codex_backend.go` - 应用请求头优化
@@ -167,6 +170,10 @@ DialContext: (&net.Dialer{
 
 调整请求头以匹配 Codex CLI。
 
+#### `isCodexClient(r *http.Request)`
+
+判断请求是否来自 Codex CLI 本身。
+
 #### `buildCodexUserAgent()`
 
 构建匹配 Codex CLI 格式的 User-Agent 字符串。
@@ -203,6 +210,45 @@ curl -v -X POST http://127.0.0.1:3425/backend-api/codex/responses \
 1. 部署优化后的 magpie
 2. 观察 403 错误是否减少
 3. 监控 Cloudflare 的拦截率
+
+## 智能指纹选择
+
+magpie 会根据请求来源智能选择是否使用伪装指纹：
+
+### Codex 客户端
+
+当请求来自 Codex CLI 本身时（通过 User-Agent 判断），magpie 会使用 Codex 的真实指纹（rustls），而不是伪装指纹。这样可以：
+
+1. **保持兼容性**：Codex 客户端与 OpenAI 后端之间的通信保持原样
+2. **避免冲突**：不会因为指纹伪装而导致 Codex 客户端无法正常工作
+3. **提高真实性**：Codex 客户端的请求看起来更真实
+
+### 非 Codex 客户端
+
+当请求来自其他客户端（如 Claude Code、Cursor 等）但使用 Codex 模型时，magpie 会使用伪装的 Codex 指纹。这样可以：
+
+1. **避免检测**：防止被 Cloudflare 等防护系统识别为机器人
+2. **提高成功率**：减少 403 Forbidden 错误
+3. **保持一致性**：所有使用 Codex 模型的请求都使用相同的指纹
+
+### 判断逻辑
+
+```go
+func isCodexClient(r *http.Request) bool {
+    ua := r.Header.Get("User-Agent")
+    return strings.HasPrefix(ua, "codex_cli_rs/") ||
+        strings.Contains(strings.ToLower(ua), "codex")
+}
+```
+
+### 示例
+
+| 客户端 | User-Agent | 使用指纹 |
+|--------|-----------|---------|
+| Codex CLI | `codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0` | Codex 真实指纹 |
+| Claude Code | `claude-cli/1.0.0` | 伪装 Codex 指纹 |
+| Cursor | `Cursor/0.1.0` | 伪装 Codex 指纹 |
+| 其他 | `Mozilla/5.0 ...` | 伪装 Codex 指纹 |
 
 ## 使用 uTLS
 

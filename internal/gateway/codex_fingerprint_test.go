@@ -236,3 +236,57 @@ func TestCodexTransportWithUTLS(t *testing.T) {
 		t.Error("Expected HTTP2 to be set")
 	}
 }
+
+func TestIsCodexClient(t *testing.T) {
+	tests := []struct {
+		name     string
+		ua       string
+		expected bool
+	}{
+		{
+			name:     "Codex CLI User-Agent",
+			ua:       "codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0",
+			expected: true,
+		},
+		{
+			name:     "Codex in User-Agent",
+			ua:       "Some App with codex/1.0",
+			expected: true,
+		},
+		{
+			name:     "Codex CLI lowercase",
+			ua:       "codex_cli_rs/0.163.0",
+			expected: true,
+		},
+		{
+			name:     "Non-Codex User-Agent",
+			ua:       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+			expected: false,
+		},
+		{
+			name:     "Empty User-Agent",
+			ua:       "",
+			expected: false,
+		},
+		{
+			name:     "Claude Code User-Agent",
+			ua:       "claude-cli/1.0.0",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest("GET", "http://example.com", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("User-Agent", tt.ua)
+
+			got := isCodexClient(req)
+			if got != tt.expected {
+				t.Errorf("isCodexClient(%q) = %v, expected %v", tt.ua, got, tt.expected)
+			}
+		})
+	}
+}

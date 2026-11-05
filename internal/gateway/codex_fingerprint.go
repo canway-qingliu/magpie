@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -239,6 +240,16 @@ func mimicCodexHeaders(h http.Header) {
 	// Remove headers that might reveal magpie's presence
 	h.Del("X-Magpie-Version")
 	h.Del("X-Magpie-Build")
+}
+
+// isCodexClient returns true if the request is from Codex CLI itself.
+// This is determined by checking the User-Agent header for Codex's signature.
+func isCodexClient(r *http.Request) bool {
+	ua := r.Header.Get("User-Agent")
+	// Codex CLI's User-Agent starts with "codex_cli_rs/" or contains "codex"
+	// (from codex-rs/login/src/auth/default_client.rs)
+	return strings.HasPrefix(ua, "codex_cli_rs/") ||
+		strings.Contains(strings.ToLower(ua), "codex")
 }
 
 // buildCodexUserAgent constructs a User-Agent string that matches Codex CLI's format.
