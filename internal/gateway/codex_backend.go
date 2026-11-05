@@ -1209,8 +1209,11 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				return
 			}
 			copyHeaders(req.Header, r.Header)
-			// Mimic Codex CLI's request headers to avoid fingerprinting
-			mimicCodexHeaders(req.Header)
+			// Mimic Codex CLI's request headers to avoid fingerprinting,
+			// but only when the request is not from Codex CLI itself
+			if !isCodexClient(r) {
+				mimicCodexHeaders(req.Header)
+			}
 			if on != nil {
 				// the account's own token and id in place of the sign-in's;
 				// what Codex said it takes back stays as it said it
