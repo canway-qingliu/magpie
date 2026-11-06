@@ -79,18 +79,11 @@ func vendorTransport(wait time.Duration) *http.Transport {
 	return &http.Transport{
 		Proxy:                 netproxy.Func,
 		ResponseHeaderTimeout: wait,
-		// Codex CLI uses a larger connection pool
-		MaxIdleConnsPerHost: 16,
-		IdleConnTimeout:     120 * time.Second,
-		ForceAttemptHTTP2:   true,
-		TLSClientConfig:     vendorTLSConfig(),
-		// Codex CLI's HTTP/2 settings
-		HTTP2: codexHTTP2Config(),
-		// Codex CLI's TCP keep-alive
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       vendorTLSConfig(),
+		HTTP2:                 netproxy.HTTP2Health(),
 	}
 }
 

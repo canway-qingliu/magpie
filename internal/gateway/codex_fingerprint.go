@@ -33,12 +33,6 @@ func codexTLSConfig() *tls.Config {
 	return config
 }
 
-// codexHTTP2Config is kept on the shared transport for its existing HTTP/2
-// limits. The ChatGPT backend itself is routed over HTTP/1.1.
-func codexHTTP2Config() *http.HTTP2Config {
-	return &http.HTTP2Config{MaxConcurrentStreams: 100, MaxReadFrameSize: 16384}
-}
-
 // sanitizeNonCodexHeaders gives non-Codex callers an honest, stable
 // User-Agent and strips headers that identify their client, terminal or
 // Codex session before the request reaches the ChatGPT backend.
@@ -47,7 +41,11 @@ func sanitizeNonCodexHeaders(h http.Header) {
 	h.Del("Originator")
 	for name := range h {
 		key := strings.ToLower(name)
-		if strings.HasPrefix(key, "x-magpie-") || strings.HasPrefix(key, "x-codex-") ||
+		// Turn state is an account-specific routing token, not caller identity.
+		// The WebSocket path moves it into client_metadata, and the HTTP path
+		// forwards it to the ChatGPT backend.
+		if strings.HasPrefix(key, "x-magpie-") ||
+			(strings.HasPrefix(key, "x-codex-") && key != "x-codex-turn-state") ||
 			key == "x-openai-subagent" || key == "x-openai-memgen-request" ||
 			key == "session-id" || key == "thread-id" || key == "session_id" ||
 			key == "conversation_id" || key == "x-client-request-id" {
