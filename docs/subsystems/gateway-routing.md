@@ -547,6 +547,21 @@ request alone. `Server.gatewayTrace` in
 `TestHeldKeyToldNoAccounts` in
 [`quotas_held_key_test.go`](../../internal/gateway/quotas_held_key_test.go).
 
+`GET /v1/models` with `X-Magpie-List-Wait: <seconds>` is another magpie
+waiting for this one's list to change (KaCli on Discord). It is answered
+with an `ETag` once the list it would be answered is other than the one
+`If-None-Match` names, and 304 at the end of the wait (at most 50s,
+`listWaitMost`) or as the gateway stops (`streamsEnding`). The list is
+looked at again on each of magpie's writes and on each change another
+process makes to its files (`filememo.Written`), each look holding the
+catalog for itself, so the wait is exempt from `holdCatalog`. It is the
+list's own route, so the key, `lanGuard`, `corsGuard` and a key's models
+judge it exactly as the list. A list asked without the header is answered
+as before, with no ETag. `modelsOnceChanged` in
+[`models_wait.go`](../../internal/gateway/models_wait.go), and
+`TestModelsWaitGuardedAsTheList` in
+[`models_wait_test.go`](../../internal/gateway/models_wait_test.go).
+
 A read-only gateway key (`access.Key.ReadOnly`, set by `add-key` or
 `access-key`; `magpie gateway-key add <name> --read-only`, `gateway-key
 access <id> read-only|full`, or the key's menu in Gateway → Gateway keys)
@@ -619,7 +634,29 @@ the spent limit that resets last). The saved key keeps the first limit in
 clients read, and `limits` is each of them (`budget.All`). Holding a
 key to its limits is the Key limits plugin's, on the gateway's budget
 point ([Plugin runtime](plugin-runtime.md#gateway-extension-points-p3-budget)):
-with it off, a key held to a limit gets 503 and nothing is sent. A local magpie
+with it off, a key held to a limit gets 503 and nothing is sent. A limit can count
+only some models (`access.Limit.Models`, zola_xynb on X), `<provider>/<model>`
+or `<provider>/*`: its sums are kept per window and scope (`sums.scope`,
+`window.scope`), and count a call only when the provider and model in the
+usage log match (`scopeModels` adds a model's other ids). `budget.reserve`
+holds a request to it only when the model it names resolves to one of them
+(`servedAs`; a group, `auto/` or unknown name holds nothing there). Before
+the reservation, `keyLimited` puts the key's spent ones on the caller
+(`withSpent`, `budget.Spent` through `gwbudget.Spender`, its issuer's too,
+`access.Identity.Spent`), `count_tokens` included. Then `keyHolds` holds the
+request, magpie's own calls for the key too; `modelAllowed` refuses a spent
+model by any of its ids (`spentFor`); `groupAllowed` ignores them, so a group
+stays the key's; `groupKeeps` and so `allowedCandidates`, `drawingTries`,
+the decision groups and embeddings' group tries leave them out, so a group
+goes on to the members left from the next request on, midway through a
+conversation too. Where nothing is left, `keyModelRefusal` (`keyGroupRefusal`
+with a media group's own members, `spentAmong` on the chat route) answers 429 with the limit's message and
+`Retry-After`, not 403, and no `X-Magpie-Limit-Reset`, so a remote magpie
+rests the model only; `keyLimited`'s own scoped refusal skips that header
+too. The model lists (`keyListHolds`) don't change, `budget.Binding`
+prefers a whole-key limit, and a remote's key card leaves such limits out
+(`keyLimitCard`). Tests: `TestKeyModelLimit*` in `key_model_limit_test.go`,
+`TestScoped*` in `internal/budget`. A local magpie
 asks it with each of its remote-magpie keys for that key's card on its
 Usage page (#1547), a window per limit's cap.
 
@@ -1035,8 +1072,9 @@ the rule's key, named `repo@ref (run N)`, living no longer than the rule,
 so everything above about issued keys holds: bounded by its issuer, its
 spend counts against it, turning the issuer off stops both.
 
-The route is the one exemption from `remoteKeyed` in `lanGuard`
-(`oidcExchange`: that exact path, POST, no gateway key). It is answered
+The route is one of two keyless exemptions from the key check in `lanGuard`
+(`oidcExchange`: that exact path, POST, no gateway key); the other is a
+magpie's proof, below. It is answered
 only while magpie is shared and past the allow list, and a refused token
 counts against `tooManyAuthFails` as a wrong key does. A read-only key is
 refused it. Covered by `TestOIDCTokenTradedForKey`
@@ -1044,6 +1082,24 @@ refused it. Covered by `TestOIDCTokenTradedForKey`
 `TestMatchEachCheck`, `TestKeysCachedAndKept`, `TestUnreadKeysLetNothingIn`
 and `TestAddRefuses` ([`oidc_test.go`](../../internal/oidc/oidc_test.go)).
 Not tried: a real GitHub Actions run against a shared magpie.
+
+`POST /v1/magpie/prove` (`provider.RemoteProvePath`,
+[`remote_prove.go`](../../internal/gateway/remote_prove.go)) is how another
+magpie looking for this one at a new address (providers-accounts, "A remote
+magpie that moved") learns it holds that magpie's gateway key before
+sending it: `{"nonce", "key_id"}` with `key_id` the key's sha256 in hex,
+answered `{"proof"}`, HMAC-SHA256 under the key of the nonce and the
+address the connection reached (`provider.RemoteProof`), or 404 when no
+enabled key has that id (`access.ProveSecret`). It carries no key, so
+`lanGuard` lets it by (`proveAsked`: that exact path, POST, no gateway key)
+only while magpie is shared and past the allow list, the rebinding check
+and the not-shared refusal still first; `corsGuard` still judges its
+Origin, and the handler refuses anything from a browser (`fromBrowser`). An
+unknown id from another machine counts against `tooManyAuthFails`. Only a
+caller that already has the key's sha256 gets a proof, for a nonce and
+address of its own choosing under a key it doesn't hold. Covered by
+`TestRemoteProveAnswersOnlyTheKeysHolder`
+([`remote_moved_test.go`](../../internal/gateway/remote_moved_test.go)).
 
 ### The stats and management API
 
@@ -1531,7 +1587,9 @@ doesn't follow one. The 3xx is the error, and it names where the search
 was sent. Every request sent with a provider's credential has the
 same rule: the gateway's client, `Provider.Do` through whichever client
 it is given (`provider.Keyed`), the provider package's own reads (usage,
-balance, models, sign-in refreshes) and the Codex relay follow a redirect
+balance, models, sign-in refreshes), the Codex relay and a plugin's
+fetch in the plugin host (`followed` in `host.js`, see
+[provider plugins](provider-plugins.md)) follow a redirect
 only to the request's origin, or from http to https on its host
 (`provider.KeepsCredentials` in
 [`redirect.go`](../../internal/provider/redirect.go)). Go would follow one

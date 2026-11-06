@@ -204,7 +204,35 @@ type Identity struct {
 	// Group is the routing group, by name, whose own accounts hold the
 	// request as well (HeldToGroup); "" when none does.
 	Group string
+	// Spent are the key's limits of some models (Limit.Models) with
+	// nothing left, as the gateway found them for this request: their
+	// models are left out of its candidates, a routing group's members
+	// too, and a request naming one is refused with Why.
+	Spent []SpentScope
 }
+
+// SpentScope is a limit of some models with nothing left until Reset.
+type SpentScope struct {
+	// Models are the limit's models, with the other ids each goes by
+	Models []string
+	Reset  time.Time
+	// Why is what a request for one of them is told
+	Why string
+}
+
+// SpentOn is the spent limit that counts model ("<provider>/<model>"),
+// the one that resets last when several do.
+func (who Identity) SpentOn(model string) (SpentScope, bool) {
+	var out SpentScope
+	found := false
+	for _, s := range who.Spent {
+		if ModelAllowed(s.Models, model) && (!found || s.Reset.After(out.Reset)) {
+			out, found = s, true
+		}
+	}
+	return out, found
+}
+
 type contextKey struct{}
 
 func WithIdentity(ctx context.Context, who Identity) context.Context {
@@ -474,7 +502,10 @@ func Update(action string, in Change) (string, error) {
 			}
 			for a := range ls {
 				for b := a + 1; b < len(ls); b++ {
-					if ls[a].sameWindow(&ls[b]) {
+					if ls[a].sameLimit(&ls[b]) {
+						if ls[a].Scoped() {
+							return "", fmt.Errorf("This key already has a limit %s for %s: change that one instead", ls[a].Per(), strings.Join(ls[a].Models, ", "))
+						}
 						return "", fmt.Errorf("This key already has a limit %s: change that one instead", ls[a].Per())
 					}
 				}
@@ -593,6 +624,49 @@ func setLegacyMirror(s *settings.Settings, k Key) error {
 func Authenticate(secret string) (Identity, bool) {
 	who, err := Check(secret)
 	return who, err == nil
+}
+
+// ProveSecret is the enabled gateway key whose sha256 is id (hex), for a
+// magpie's proof that it holds the key (provider.RemoteProvePath): one
+// Authenticate takes, found by constant-time compares over every key, so
+// which one matched, or whether any did, takes no different time. A key
+// turned off, expired or whose issuer no longer lets it in, and a store
+// that can't be read, have none.
+func ProveSecret(id string) (string, bool) {
+	want, err := hex.DecodeString(id)
+	if err != nil || len(want) != sha256.Size {
+		return "", false
+	}
+	mu.Lock()
+	keys, err := load()
+	s := settings.Load()
+	mu.Unlock()
+	if err != nil {
+		return "", false
+	}
+	secrets := make([]string, 0, len(keys)+1)
+	for _, k := range keys {
+		secrets = append(secrets, k.Secret)
+	}
+	// the sharing key an older magpie kept in the settings alone, which
+	// Check takes while the store has none marked
+	if s.LANKey != "" {
+		secrets = append(secrets, s.LANKey)
+	}
+	found := ""
+	for _, secret := range secrets {
+		sum := sha256.Sum256([]byte(secret))
+		if subtle.ConstantTimeCompare(sum[:], want) == 1 && secret != "" && found == "" {
+			found = secret
+		}
+	}
+	if found == "" {
+		return "", false
+	}
+	if _, err := Check(found); err != nil {
+		return "", false
+	}
+	return found, true
 }
 
 // On: the key with this id is one Authenticate takes, in the store and not
