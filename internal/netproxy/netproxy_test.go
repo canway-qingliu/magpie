@@ -274,18 +274,38 @@ func TestDispatchHTTP1(t *testing.T) {
 		io.Copy(io.Discard, res.Body)
 		res.Body.Close()
 	}
-	want := []string{"/h2 HTTP/2.0 (h2 offered)", "/h1 HTTP/1.1", "/h1/own HTTP/1.1", "/h2/own HTTP/2.0 (h2 offered)"}
+	// A provider's own WithHTTP1 is an HTTP/1.1 route too, but not one
+	// HTTP1 itself chose (the path does not match HTTP1's prefix): it keeps
+	// the base transport's TLS config and its automatic compression, and is
+	// not given the ChatGPT backend's profile.
+	req, err := http.NewRequestWithContext(WithHTTP1(context.Background(), srv.URL), http.MethodGet, srv.URL+"/asked", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("/asked: %v", err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	want := []string{"/h2 HTTP/2.0 (h2 offered)", "/h1 HTTP/1.1", "/h1/own HTTP/1.1", "/h2/own HTTP/2.0 (h2 offered)", "/asked HTTP/1.1"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("asked\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	if encodings["/h1"] != "" || encodings["/h1/own"] != "" {
-		t.Errorf("HTTP/1.1 routes sent automatic compression headers: %v", encodings)
+		t.Errorf("ChatGPT HTTP/1.1 routes sent automatic compression headers: %v", encodings)
 	}
 	if encodings["/h2"] != "gzip" || encodings["/h2/own"] != "gzip" {
 		t.Errorf("ordinary routes lost their automatic compression headers: %v", encodings)
 	}
-	if config := d.transport(route{h1: true}).TLSClientConfig; config == nil || len(config.NextProtos) != 0 || config.RootCAs != pool || config.ServerName != "codex-profile.test" {
-		t.Errorf("HTTP/1.1 TLS profile = %#v", config)
+	if encodings["/asked"] != "gzip" {
+		t.Errorf("WithHTTP1 route did not keep automatic compression: %v", encodings)
+	}
+	if config := d.transport(route{h1: true, profile: true}).TLSClientConfig; config == nil || len(config.NextProtos) != 0 || config.RootCAs != pool || config.ServerName != "codex-profile.test" {
+		t.Errorf("ChatGPT HTTP/1.1 TLS profile = %#v", config)
+	}
+	if config := d.transport(route{h1: true}).TLSClientConfig; config != nil && config.ServerName == "codex-profile.test" {
+		t.Errorf("WithHTTP1 route unexpectedly has the ChatGPT TLS profile: %#v", config)
 	}
 	if config := d.transport(route{}).TLSClientConfig; config != nil && config.ServerName == "codex-profile.test" {
 		t.Errorf("ordinary route unexpectedly has the HTTP/1.1 TLS profile: %#v", config)

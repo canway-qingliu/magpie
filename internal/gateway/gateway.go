@@ -158,11 +158,12 @@ func wiresOf(ctx context.Context) map[string]string {
 // The reasons serve gives a model move of its own (ModelMove.Why);
 // Claude Desktop's are desktopMove's.
 const (
-	movedClassifier = "classifier"  // Claude Code's auto mode classifier: the model /model moved its tier to
-	movedClaudeTier = "claude-tier" // Claude Code's full id of a Claude model: the model set for its tier
-	movedStandIn    = "stand-in"    // a model magpie doesn't serve: the one the agent's config names
-	movedCodexTurn  = "codex-turn"  // Codex's memory or auto-review call: its last turn's model
-	movedPrivacy    = "privacy"     // a request masking would change: Settings › Privacy's model for it
+	movedClassifier  = "classifier"   // Claude Code's auto mode classifier: the model /model moved its tier to
+	movedClaudeTier  = "claude-tier"  // Claude Code's full id of a Claude model: the model set for its tier
+	movedStandIn     = "stand-in"     // a model magpie doesn't serve: the one the agent's config names
+	movedCodexTurn   = "codex-turn"   // Codex's memory or auto-review call: its last turn's model
+	movedCodexFollow = "codex-follow" // Codex's memory call on a bare default of its own magpie serves, nothing set for it: the conversation's model
+	movedPrivacy     = "privacy"      // a request masking would change: Settings › Privacy's model for it
 )
 
 // standIn is StandIn's model for one magpie shows no entry for: not a
@@ -504,6 +505,9 @@ type Server struct {
 	// codexTurns is the model each Codex last had a turn of its own
 	// answered on, by caller (codexMemoryStandIn)
 	codexTurns sync.Map
+	// held is the most prompt tokens each provider's model answered
+	// (heldOf), by provider id and model
+	held sync.Map
 	// codexLeads is the model each Codex conversation's own turns last
 	// went on, for its side calls to follow (codexFollowTo)
 	codexLeads codexLeads
@@ -1089,6 +1093,12 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	if local(r) {
 		out["pid"], out["serves"] = os.Getpid(), Serves
 	}
+	// its MCP router has a server to give, for another magpie that has
+	// this one as a Remote magpie to give it a server of its own
+	// (provider/remote_hub.go); told to whoever the router answers
+	if (local(r) || sharedWith(r)) && hubServes() {
+		out["mcp_hub"] = true
+	}
 	writeJSON(w, 200, out)
 }
 
@@ -1201,9 +1211,7 @@ func (s *Server) quotaCardsRefresh(w http.ResponseWriter, r *http.Request) {
 		case id != "":
 			provider.RefreshUsage(ctx, id, user)
 		case scope != nil:
-			for _, q := range scope.cards(provider.CachedCards(time.Now())) {
-				provider.RefreshUsage(ctx, q.Provider, q.User)
-			}
+			provider.RefreshEach(ctx, scope.cards(provider.CachedCards(time.Now())))
 		default:
 			provider.ReadAllCards(ctx)
 		}
@@ -2009,6 +2017,8 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 		}
 		if from == provider.Chat {
 			body = thinkingEffort(body)
+			// OpenCode 1's promptCacheKey (#5468)
+			body = cacheKeyCamel(body)
 			// a tool Pi adds during a conversation, in a message of its
 			// own: in the request's tools for every route, the relay's
 			// and every check that reads them (#2322)
@@ -2371,9 +2381,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		asked = grouped(at(m))
 		move(m, movedStandIn)
 	}
-	if m := s.codexMemoryStandIn(r, call.Agent, agent, call.Kind, asked, body); m != "" {
+	if m, why := s.codexMemoryStandIn(r, call.Agent, agent, call.Kind, asked, body); m != "" {
 		asked = m
-		move(m, movedCodexTurn)
+		move(m, why)
 	}
 	// a Codex subagent on the model set for Codex's subagents, whatever
 	// its lead asked for (willz on Discord), and a Claude Desktop
@@ -3831,6 +3841,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			w = spliceAfter(w, hw.over)
 		}
 		reasked += hw.reasked
+		if hw.code() > 0 && hw.code() < 400 && !hw.refused {
+			// an answer, passing or held whole: the model holds a prompt
+			// this size (tooLongUnsaid)
+			s.noteHeld(c.p.ID, c.model, call.Usage.prompt())
+		}
 		if hw.passing {
 			clientResponseID = call.Usage.ResponseID
 		}
@@ -3843,7 +3858,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		outgrew := false // a failure that didn't say so was the request's length
 		if !hw.passing && !hw.refused && hw.code() >= 400 {
 			if req, err := parse(from, attemptBody); err == nil {
-				if msg, ok := tooLongUnsaid(c.p, c.model, estimate(req), hw.code(), hw.errBody()); ok {
+				if msg, ok := tooLongUnsaid(c.p, c.model, estimate(req), s.heldOf(c.p.ID, c.model), hw.code(), hw.errBody()); ok {
 					// told as an overflow: not asked again, of this one or
 					// another, and nobody rests
 					hw.failure, hw.failMsg, outgrew = http.StatusBadRequest, msg, true
@@ -5063,7 +5078,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		}
 		if up := upBytesOf(r.Context()); up != nil {
 			rec.UpBytes, rec.PlainBytes = up.wire, up.plain
-			rec.DownBytes, rec.ImageFilesSaved = up.downOf(), up.saved
+			rec.DownBytes, rec.ImageFilesSaved, rec.ImageFiles = up.downOf(), up.saved, up.images
 		}
 		failedWith(&rec, call.Status, call.Error, call.Usage.ErrType)
 		withBodies(&rec, &call)
@@ -6026,17 +6041,19 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// turns the whole request away for (#1462)
 			body = withReasoningOnToolTurns(body)
 		}
+		// a client that took the gateway for an Ollama server (its
+		// /api/tags and /api/show are answered in Ollama's shape) sends
+		// Ollama's per-request options beside its Chat fields: Hermes
+		// Agent's {"num_ctx": …} from /api/show's context length. No Chat
+		// API reads them, Ollama's own /v1 included (its
+		// ChatCompletionRequest has no options), and a strict one turns
+		// the whole request away: Gemini's OpenAI-compatible API over a
+		// name it doesn't know (#3097), Mistral with 422 extra_forbidden
+		// (lijiho96940561 on X). Their runner settings have no place
+		// there, as the Ollama route's own body builder judges
+		// (ollamaChatBody), so no upstream is sent them
+		body = withoutOllamaOptions(body)
 		compat := geminiCompat(p.Host(), model)
-		if compat {
-			// a client that took the gateway for an Ollama server (its
-			// /api/show is answered in Ollama's shape) sends Ollama's
-			// per-request options beside its Chat fields. Gemini's
-			// OpenAI-compatible API reads proto JSON and turns the whole
-			// request away over a name it doesn't know (#3097), and the
-			// runner settings in options have no place on a Chat API, as
-			// the Ollama route's own body builder judges (ollamaChatBody)
-			body = withoutFields(body, "options")
-		}
 		// Gemini's thought signatures, which came to the client in its
 		// calls' ids, go back where Gemini wants them; another upstream
 		// gets the calls' own ids (#687)
@@ -7503,6 +7520,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		}
 		if to == provider.Chat && (p.IsBedrock() || p.IsAzure()) {
 			body = asCompletionTokens(body)
+		}
+		if to == provider.Chat && (p.Preset == "mistral" || p.Host() == "api.mistral.ai") {
+			// an earlier turn's reasoning, which the build replays in
+			// reasoning_content for a model whose name says DeepSeek
+			// wherever it is served (chatReplaysReasoning), and Mistral
+			// turns that field away (#494): the thinking part it takes,
+			// as the relayed route converts it. The Chat route alone had
+			// it; every follow-up of a Codex tool loop was refused, 422
+			// extra_forbidden (#4906)
+			body = mistralThinking(body)
 		}
 		if to == provider.Responses && !keepsLoneNone(p) {
 			// the "none" buildResponses keeps for a request that turned

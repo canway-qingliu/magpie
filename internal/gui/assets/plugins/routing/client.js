@@ -470,6 +470,35 @@ function routingPage(part) {
     const d = decodeOf(r, ms, ttft, firstText, flow, firstReasoning, reasoningHidden);
     return d ? d.n / (d.w / 1000) : 0;
   };
+  // floorOf is the least a request that tells no speed of its own wrote
+  // at, as the Usage page's Requests tab tells it for a gateway call
+  // (usage/page.js's ledFloor_, zzzkl3994 on Discord: Routing left the speed
+  // out of rows the Requests tab gave one): one that reasoned with no first
+  // text recorded, its answer over the time after its first token, unless
+  // its content came in a burst; else its output over its whole time, from
+  // the request to its last token, when that is 1,000 tokens or more over a
+  // second or more. answer says which. null when it tells none.
+  function floorOf(r) {
+    if (speedOf(r)) return null;
+    const out = r.out || 0, ms = r.ms || 0, ttft = r.ttft || 0, think = reasoningOf(r);
+    const n = out - think, w = ms - ttft;
+    if (ttft > 0 && think > 0 && !(r.firstText > 0) && n >= 100 && w >= 1000 && n * 1000 <= 10000 * w && !(r.flow > 0 && r.flow * 4 < w)) return { n, w, answer: true };
+    return out >= 1000 && ms >= 1000 && out * 1000 <= 10000 * ms ? { n: out, w: ms } : null;
+  }
+  // rowSpeed is a done request's speed as its row says it: measured, else
+  // floorOf's "≥", with what it was told from. null for none
+  function rowSpeed(r, how) {
+    if (!r.done || how === "bad" || r.status >= 400) return null;
+    const v = speedOf(r);
+    if (v) return { v, text: t("{n} tok/s", { n: Math.round(v) }) };
+    const f = floorOf(r);
+    if (!f) return null;
+    return {
+      v: f.n * 1000 / f.w, text: "≥" + t("{n} tok/s", { n: Math.round(f.n * 1000 / f.w) }),
+      title: f.answer ? t("At least: {n} answer tokens in {ms} after the first token, the {r} reasoning tokens left out. No first text was recorded, so reasoning after the first token is counted too", { n: ledNum(f.n), ms: took(f.w), r: ledNum(reasoningOf(r)) })
+        : t("At least: {n} output tokens in {ms}, from the request to its last token, the wait for the first one counted too", { n: ledNum(f.n), ms: took(f.w) }),
+    };
+  }
   function promptOf(r) {
     let prompt = 0, read = 0;
     // Input excludes both cache tiers. Include writes in the denominator,
@@ -508,14 +537,14 @@ function routingPage(part) {
     // Both times start at the request, so subtracting them leaves the
     // reply's decode window even after a retry. Output is the reply's,
     // not the prompt or the output of earlier billable tries.
-    const speed = r.done && how !== "bad" ? speedOf(r) : 0;
+    const speed = rowSpeed(r, how);
     const values = {
       duration: ["duration", "Duration", r.done && r.ms ? took(r.ms) : "—", ""],
       ttft: ["ttft", "First token", r.done && r.ttft ? took(r.ttft) : "—", t("First token")],
       tokens: ["tokens", "Tokens", r.tokens ? tokens(r.tokens) : "—", tokenBreakdown([r])],
       cache: ["cache-hit", "Cache", prompt ? pct(100 * read / prompt) : "—",
         t("Cache hit rate") + ": " + t("The share of the prompt read from the cache")],
-      speed: ["speed", "Speed", speed ? t("{n} tok/s", { n: Math.round(speed) }) : "—",
+      speed: ["speed", "Speed", speed ? speed.text : "—", speed?.title ||
         t("Output tokens a second after the first, over the streamed replies") + ". " + t("A reply that reasoned counts only its answer, from its first text: the reasoning was written before the stream showed it") + ". " + t("No answer text: speed includes reasoning only when visible reasoning streamed; hidden reasoning has no speed")],
       cost: ["cost", "Cost", routeCost(r), [r.priced ? costNote() : routeCredits([r]) ? "" : t("No known price or token counts for this request"), routeCredits([r]) ? creditsNote() : ""].filter(Boolean).join("\n")],
     };
@@ -1548,11 +1577,16 @@ function routingPage(part) {
   // the title of the session a request is of, as its agent named it, or
   // nothing: never one matched to it by its prompt (parentMatched), which
   // the list's head says is a guess (connor_yang on Discord)
-  const titleOf = (r) => !r || r.parentMatched ? "" : r.agent === "codex" ? codexNames.get(groupSession(r)) || "" : otherTitles.get(ownKey(r)) || "";
+  const titleOf = (r) => oneLine(!r || r.parentMatched ? "" : r.agent === "codex" ? codexNames.get(groupSession(r)) || "" : otherTitles.get(ownKey(r)) || "");
   // sessionName is what a request's session is called where it has a
   // name: its agent's title for it (the trace's, or one read since), else
   // nothing
-  const sessionName = (r) => r.sessionTitle || titleOf(r) || "";
+  const sessionName = (r) => oneLine(r.sessionTitle) || titleOf(r);
+  // oneLine is a title as one line. A title is often its session's first
+  // prompt, and WebKit breaks a line at U+2028/U+2029 even under nowrap, so
+  // a session's block meant for one line of it stacked every line of the
+  // prompt (tz_188 on Discord)
+  function oneLine(s) { return s ? String(s).replace(/[\s\u0085]+/g, " ").trim() : ""; }
   const subs = new Map();   // a group in the group's way down → its heading { li, wire, key, up }
   // A provider's keys serving one model, FOLD_AT or more of them side by
   // side, fold into one row that tells of them all (#1319: 53 keys for one
@@ -2369,7 +2403,7 @@ function routingPage(part) {
     b.append(icon(w.icon || (w.preset ? w.preset : "generic")));
     const name = el("span", "who", who(w));
     // the provider's name heads the card; a row names what differs
-    const sub = el("span", "", w.fallback ? w.name : w.kind === "provider" ? "" : w.plan || "");
+    const sub = el("span", "", rowSub(w, false));
     b.append(name, " ", sub, el("code", "mdl", w.fixed ? `${w.model}:${w.fixed}` : w.model));
     if (w.fixed) b.title = t("{level} reasoning, fixed on this model in the group", { level: w.fixed });
     if (w.fast) {
@@ -2392,8 +2426,13 @@ function routingPage(part) {
     st.onpointerleave = () => delete st.dataset.cut;
     li.append(el("i", "dot"), b, st, bar, tg);
     li.title = w.id;
-    return { li, wire: path(), st, bi, tg, w };
+    return { li, wire: path(), st, bi, tg, w, subEl: sub };
   }
+  // rowSub is what a row says after the name: a fallback's provider, an
+  // account's plan; and the provider of a key or account named as one of
+  // another provider's on the stage is (twin), so two providers' Key-01
+  // rows, each of the same model, are told apart (iamleehom on Discord)
+  const rowSub = (w, twin) => w.fallback ? w.name : w.kind === "provider" ? "" : twin ? [w.name || w.provider, w.plan].filter(Boolean).join(" · ") : w.plan || "";
 
   // sync puts the staged routes on the stage: each agent on the left, and
   // the accounts they weighed, each route's in the order it weighed them —
@@ -2494,6 +2533,13 @@ function routingPage(part) {
       // its way down: its route's heading, then the groups in the group
       row.path = ways ? [wayAt.get(id), ...(row.w.via || [])] : row.w.via || [];
     }
+    // a name more than one provider's rows go by says the provider too
+    const provsOf = new Map();
+    for (const id of ids) {
+      const w = rows.get(id).w;
+      if (w.kind !== "provider") { const n = who(w); provsOf.set(n, (provsOf.get(n) || new Set()).add(w.provider)); }
+    }
+    for (const id of ids) { const row = rows.get(id); setText(row.subEl, rowSub(row.w, provsOf.get(who(row.w))?.size > 1)); }
     // a group in the group heads its models, which it routes by its own
     // routing, set in under it
     // keys or accounts side by side that fold together, FOLD_AT or more
@@ -3453,6 +3499,7 @@ function routingPage(part) {
       case "claude-tier": return t("{agent} asked for {model} by Claude's full id; magpie served it on {to}, the model set for that tier.", v);
       case "stand-in": return t("{agent} asked for {model}, which magpie doesn't serve; magpie served it on {to}, the model its config names.", v);
       case "codex-turn": return t("{agent} asked for {model} for a call of its own, which magpie doesn't serve; magpie served it on {to}, the model its last turn was answered on.", v);
+      case "codex-follow": return t("{agent} asked for {model}, one of its own default models, for its memories, and its config names no model for them; magpie served it on {to}, the model of its conversation.", v);
       case "privacy": return t("Masking would have changed this request, so magpie sent it as written to {to}, the model set for that in Settings › Privacy.", v);
       default: return t("magpie served it on {to} in place of {model}.", v);
     }
@@ -6410,7 +6457,16 @@ function routingPage(part) {
     const edit = el("button", "text", t("Edit"));
     edit.onclick = (e) => { e.stopPropagation(); open(); };
     const open = () => openGroupEditor(g);
-    row.onclick = open;
+    // words dragged across on the card are being selected to copy
+    // (jiabubu on Discord), not a click that opens the editor; a click
+    // with something else selected still opens it
+    let selAtDown = "";
+    row.onpointerdown = () => { selAtDown = String(getSelection() || ""); };
+    row.onclick = () => {
+      const s = getSelection();
+      if (s && !s.isCollapsed && row.contains(s.focusNode) && String(s) !== selAtDown) return;
+      open();
+    };
     row.oncontextmenu = (e) => { e.preventDefault(); groupMenu(ics, g); };
     row.append(ics, main, tags, edit);
     // a group of the user's switches off as a whole, kept as it is (PAMI
@@ -8445,8 +8501,8 @@ function routingPage(part) {
     if (r.done && r.ms) meta.push(took(r.ms));
     // and how fast it wrote, as the Routing page's row tells it (#2050):
     // none for one that failed or whose speed can't be told
-    const speed = r.done && how !== "bad" ? speedOf(r) : 0;
-    if (speed) meta.push(t("{n} tok/s", { n: Math.round(speed) }));
+    const speed = rowSpeed(r, how);
+    if (speed) meta.push(speed.text);
     // where it went and its totals share a line, and the totals, longer
     // with the speed, go under it, at the right, when both don't fit: the
     // panel is narrow, and neither the "served …" mark nor the speed is cut

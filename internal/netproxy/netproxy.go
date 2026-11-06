@@ -120,14 +120,17 @@ func Held(ctx context.Context) error {
 // "direct", #1522) goes through its own provider's proxy, never the one
 // it was made under. A provider's leave not to check its certificate
 // (WithUncheckedTLS) goes the same way: it is the outer provider's, and
-// dropped here.
+// dropped here, and so is its ask for HTTP/1.1 (WithHTTP1).
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil {
+	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil {
 		return ctx
 	}
 	ctx = context.WithValue(ctx, choiceKey{}, choice)
 	if uncheckedOf(ctx) != nil {
 		ctx = context.WithValue(ctx, uncheckedKey{}, map[string]bool(nil))
+	}
+	if http1Of(ctx) != nil {
+		ctx = context.WithValue(ctx, http1Key{}, map[string]bool(nil))
 	}
 	return ctx
 }
@@ -158,9 +161,13 @@ func forChoice(c string) (*url.URL, error) {
 // its transport.
 var HTTP1 func(u *url.URL) bool
 
-// HTTP1TLSConfig is the TLS profile for requests HTTP1 selects. It is
-// evaluated when a route's transport is made, so tests can still supply
-// upstreamTLS before the first request.
+// HTTP1TLSConfig is the TLS profile for requests HTTP1 selects — the
+// ChatGPT backend's HTTP/1.1 route, which carries Codex's TLS shape. It is
+// evaluated when that route's transport is made, so tests can still supply
+// upstreamTLS before the first request. An HTTP/1.1 route from another
+// source (a provider's own WithHTTP1, or an HTTP/2 connection that broke)
+// keeps the base transport's TLS config: the profile is Codex's, and is
+// not put on another vendor's connections.
 var HTTP1TLSConfig func() *tls.Config
 
 // Dispatch is a RoundTripper sending a request through base, unless its
@@ -171,8 +178,10 @@ var HTTP1TLSConfig func() *tls.Config
 // through, among them. A move of the global proxy (the settings) drops
 // the idle connections the old one dialled, which a transport, pooling
 // by target host alone, would have carried over the switch (#4523). A
-// request HTTP1 names goes through a clone kept for HTTP/1.1
-// (http1Only), and one to a host whose certificate the provider's user
+// request HTTP1 names, one to a host its provider asked HTTP/1.1 of
+// (WithHTTP1), and one to a host whose HTTP/2 connection carried a TLS
+// record that didn't decrypt (recordError, for h2Broken after) go
+// through a clone kept for HTTP/1.1 (http1Only), and one to a host whose certificate the provider's user
 // said not to check (WithUncheckedTLS) through a clone kept for that
 // host alone (uncheckTLS). A host whose IPv6 is taken but goes nowhere
 // is dialed over IPv4 (v4Fallback).
@@ -195,8 +204,14 @@ type dispatch struct {
 // provider's own proxy, HTTP/1.1 only, the host:port whose certificate is
 // not checked, or any of them together.
 type route struct {
-	choice    string
-	h1        bool
+	choice string
+	h1     bool
+	// profile says the route is one HTTP1 itself selected (the ChatGPT
+	// backend's): h1 is also true, and the transport takes HTTP1TLSConfig
+	// and drops Go's automatic gzip header, both Codex's shape. An h1
+	// route from another source keeps the base transport's TLS config and
+	// its compression.
+	profile   bool
 	unchecked string
 }
 
@@ -204,11 +219,26 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
 	if d.moved() {
 		d.CloseIdleConnections()
 	}
-	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL), unchecked: uncheckedHost(req)}
-	if r == (route{}) {
-		return v4Retry(d.base, req)
+	asked := HTTP1 != nil && HTTP1(req.URL)
+	r := route{choice: choiceOf(req.Context()), h1: asked || http1Asked(req) || h2BrokenFor(req), profile: asked, unchecked: uncheckedHost(req)}
+	t := d.base
+	if r != (route{}) {
+		t = d.transport(r)
 	}
-	return v4Retry(d.transport(r), req)
+	res, err := v4Retry(t, req)
+	if r.h1 {
+		return res, err
+	}
+	if err != nil {
+		if recordError(err) {
+			markH2Broken(req)
+		}
+		return res, err
+	}
+	if res.ProtoMajor == 2 && res.Body != nil && res.Body != http.NoBody {
+		res.Body = h2Watch{ReadCloser: res.Body, req: req}
+	}
+	return res, err
 }
 
 // Watch is a check a transport of its own makes before each request: it
@@ -263,13 +293,15 @@ func (d *dispatch) transport(r route) *http.Transport {
 		}
 	}
 	if r.h1 {
-		if HTTP1TLSConfig != nil {
-			if config := HTTP1TLSConfig(); config != nil {
-				t.TLSClientConfig = config
+		if r.profile {
+			if HTTP1TLSConfig != nil {
+				if config := HTTP1TLSConfig(); config != nil {
+					t.TLSClientConfig = config
+				}
 			}
+			t.DisableCompression = true
 		}
 		http1Only(t)
-		t.DisableCompression = true
 	}
 	if r.unchecked != "" {
 		uncheckTLS(t)

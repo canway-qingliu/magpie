@@ -341,8 +341,12 @@ var (
 	// answers a GLM Coding Plan's key at the pay-as-you-go endpoint (1113
 	// "余额不足或无可用资源包，请充值") — out of credit, not a rate limit;
 	// WorkBuddy's 429 14018 "Credits exhausted. Please visit the link
-	// below to purchase add-on packs…" too (Creat.wu on Discord)
-	brokeWords = regexp.MustCompile(`(?i)insufficient.?(balance|credit|fund)|\bcredits? (are )?exhausted\b|余额不足|欠费|请充值`)
+	// below to purchase add-on packs…" too (Creat.wu on Discord), and
+	// OpenAI's 429 credit_balance_exhausted for an organization whose
+	// prepaid API credits are spent: its underscores kept "credits
+	// exhausted" from matching, so it read as a rate limit and the same
+	// key was asked again rather than the next account
+	brokeWords = regexp.MustCompile(`(?i)insufficient.?(balance|credit|fund)|\bcredits? (are )?exhausted\b|credit.?balance.?exhausted|余额不足|欠费|请充值`)
 	// quotaWords: it has used up what its plan allows for now. The budget's
 	// words needn't sit beside each other: LiteLLM's spent key answers 429
 	// "Budget has been exceeded! Key=… (sk-…), Current cost: …, Max budget:
@@ -712,7 +716,29 @@ func restrictedRefused(p provider.Provider, status int, body []byte) bool {
 	if restrictedSaid(status, body) {
 		return true
 	}
-	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body))
+	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body)) || googleSuspended(p, status, body)
+}
+
+// googleToS is Google's 403 PERMISSION_DENIED for a Code Assist account it
+// suspended: "This service has been disabled in this account for violation
+// of Terms of Service. Please submit an appeal to continue using this
+// product." (bestony on Discord, an Antigravity account, 11-06).
+var googleToS = regexp.MustCompile(`(?i)disabled in this account for violation of Terms of Service`)
+
+// googleSuspended says Google suspended p, an account signed in to
+// Antigravity or Gemini CLI, for its terms (googleToS): the account, not
+// the model or the request, until an appeal goes through. Read as any
+// failure, it rested a minute, doubling to ten, and was asked again, and
+// refused, every ten minutes for good. Another vendor's same words are its
+// own, and aren't read so.
+func googleSuspended(p provider.Provider, status int, body []byte) bool {
+	if status != http.StatusForbidden {
+		return false
+	}
+	if a := accountAgent(p); a != "antigravity" && a != "gemini" {
+		return false
+	}
+	return googleToS.Match(wordsOf(body))
 }
 
 // isWorkBuddy is whether p is a WorkBuddy account, either build's: the
