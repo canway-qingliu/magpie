@@ -225,7 +225,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			hit.Then = provider.ThenUses(g.Rules, q, hit.N, hit.uses())
 			if hit.N <= len(g.Rules) {
 				hit.UseEffort = g.Rules[hit.N-1].UseEffort   // and how hard it asks it to think
-				hit.RetryOn502 = g.Rules[hit.N-1].RetryOn502 // and whether to retry on 502
+				hit.RetryOn502 = g.Rules[hit.N-1].RetryOn502 // and whether a 502 is asked again
 			}
 		}
 	}()
