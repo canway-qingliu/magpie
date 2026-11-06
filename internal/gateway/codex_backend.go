@@ -1209,10 +1209,10 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				return
 			}
 			copyHeaders(req.Header, r.Header)
-			// Mimic Codex CLI's request headers to avoid fingerprinting,
-			// but only when the request is not from Codex CLI itself
+			// Preserve Codex's own identity on its requests. Other callers
+			// get a stable magpie identity without their app or terminal data.
 			if !isCodexClient(r) {
-				mimicCodexHeaders(req.Header)
+				sanitizeNonCodexHeaders(req.Header)
 			}
 			if on != nil {
 				// the account's own token and id in place of the sign-in's;

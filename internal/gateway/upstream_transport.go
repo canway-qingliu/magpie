@@ -20,6 +20,15 @@ import (
 // system's roots, but for a test trusting its own server.
 var upstreamTLS *tls.Config
 
+func init() { netproxy.HTTP1TLSConfig = codexTLSConfig }
+
+func vendorTLSConfig() *tls.Config {
+	if upstreamTLS == nil {
+		return nil
+	}
+	return upstreamTLS.Clone()
+}
+
 // upstreamTransport is the gateway's transport to the vendors: a provider
 // with a proxy of its own is sent through a transport kept for that proxy
 // (#237), and the ChatGPT backend over HTTP/1.1 (netproxy.HTTP1), a
@@ -74,8 +83,7 @@ func vendorTransport(wait time.Duration) *http.Transport {
 		MaxIdleConnsPerHost: 16,
 		IdleConnTimeout:     120 * time.Second,
 		ForceAttemptHTTP2:   true,
-		// Use Chrome's TLS fingerprint to avoid Cloudflare detection
-		TLSClientConfig: codexTLSConfig(),
+		TLSClientConfig:     vendorTLSConfig(),
 		// Codex CLI's HTTP/2 settings
 		HTTP2: codexHTTP2Config(),
 		// Codex CLI's TCP keep-alive

@@ -11,6 +11,19 @@ This page covers how a request is routed. Plugins that change requests and
 replies are in [Gateway middleware](gateway-middleware.md). Subscriptions
 served by a plugin are in [Provider and plugin ownership](provider-plugins.md).
 
+## Vendor transport and Codex identity
+
+`upstreamTransport` sends gateway requests through `netproxy.Dispatch` and
+the shared vendor transport. The ChatGPT backend is selected for HTTP/1.1 by
+`provider/codex_http1.go`; that route alone gets the Codex TLS profile and has
+automatic gzip requests disabled. Other vendors use Go's default TLS profile.
+On the Codex backend, `fromCodex` callers keep their Codex request identity.
+Other callers use `magpie/<version>` and have their application, terminal and
+Codex session headers removed before the request is sent. The stopped-gateway
+Codex relay is separate and preserves Codex's own identity. See
+[Codex upstream request identity](../codex-fingerprint.md) for the fields and
+implementation links.
+
 WorkBuddy and CodeBuddy Code's `X-Conversation-ID` is a native session header
 in `sessionHeaders` (`sessionOf`, `nativeSessionOf`, `conversationID` in
 [`gateway.go`](../../internal/gateway/gateway.go)). It keeps their requests

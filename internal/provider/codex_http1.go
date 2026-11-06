@@ -18,8 +18,8 @@ func init() { netproxy.HTTP1 = codexBackend }
 // local proxy a request failed with PROTOCOL_ERROR until HTTP/2 was turned
 // off.
 //
-// Note: We keep HTTP/1.1 for the ChatGPT backend due to these known issues,
-// but we optimize the TLS fingerprint and other headers to mimic Codex CLI.
+// Dispatch also gives this route Codex's TLS profile and disables Go's
+// automatic gzip request header. Other vendors keep the normal transport.
 func codexBackend(u *url.URL) bool {
 	b, err := url.Parse(CodexBase)
 	return err == nil && u.Host == b.Host

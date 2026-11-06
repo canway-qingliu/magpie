@@ -234,10 +234,12 @@ func TestDispatchHTTP1(t *testing.T) {
 	var mu sync.Mutex
 	offered := map[string]bool{} // the client's address → its hello offered h2
 	var got []string
+	encodings := map[string]string{}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		got = append(got, r.URL.Path+" "+r.Proto+map[bool]string{true: " (h2 offered)"}[offered[r.RemoteAddr]])
+		encodings[r.URL.Path] = r.Header.Get("Accept-Encoding")
 	}))
 	srv.EnableHTTP2 = true
 	srv.TLS = &tls.Config{GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -255,6 +257,11 @@ func TestDispatchHTTP1(t *testing.T) {
 	was := HTTP1
 	HTTP1 = func(u *url.URL) bool { return strings.HasPrefix(u.Path, "/h1") }
 	t.Cleanup(func() { HTTP1 = was })
+	wasTLSConfig := HTTP1TLSConfig
+	HTTP1TLSConfig = func() *tls.Config {
+		return &tls.Config{RootCAs: pool, ServerName: "codex-profile.test", InsecureSkipVerify: true, NextProtos: []string{"h2", "http/1.1"}}
+	}
+	t.Cleanup(func() { HTTP1TLSConfig = wasTLSConfig })
 	for _, c := range []struct {
 		path   string
 		choice string
@@ -270,6 +277,18 @@ func TestDispatchHTTP1(t *testing.T) {
 	want := []string{"/h2 HTTP/2.0 (h2 offered)", "/h1 HTTP/1.1", "/h1/own HTTP/1.1", "/h2/own HTTP/2.0 (h2 offered)"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("asked\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if encodings["/h1"] != "" || encodings["/h1/own"] != "" {
+		t.Errorf("HTTP/1.1 routes sent automatic compression headers: %v", encodings)
+	}
+	if encodings["/h2"] != "gzip" || encodings["/h2/own"] != "gzip" {
+		t.Errorf("ordinary routes lost their automatic compression headers: %v", encodings)
+	}
+	if config := d.transport(route{h1: true}).TLSClientConfig; config == nil || len(config.NextProtos) != 0 || config.RootCAs != pool || config.ServerName != "codex-profile.test" {
+		t.Errorf("HTTP/1.1 TLS profile = %#v", config)
+	}
+	if config := d.transport(route{}).TLSClientConfig; config != nil && config.ServerName == "codex-profile.test" {
+		t.Errorf("ordinary route unexpectedly has the HTTP/1.1 TLS profile: %#v", config)
 	}
 }
 

@@ -12,6 +12,7 @@ package netproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/url"
@@ -157,6 +158,11 @@ func forChoice(c string) (*url.URL, error) {
 // its transport.
 var HTTP1 func(u *url.URL) bool
 
+// HTTP1TLSConfig is the TLS profile for requests HTTP1 selects. It is
+// evaluated when a route's transport is made, so tests can still supply
+// upstreamTLS before the first request.
+var HTTP1TLSConfig func() *tls.Config
+
 // Dispatch is a RoundTripper sending a request through base, unless its
 // context names a provider's own proxy (With): then through a clone of
 // base kept for that proxy alone. Connections are so reused among the
@@ -257,7 +263,13 @@ func (d *dispatch) transport(r route) *http.Transport {
 		}
 	}
 	if r.h1 {
+		if HTTP1TLSConfig != nil {
+			if config := HTTP1TLSConfig(); config != nil {
+				t.TLSClientConfig = config
+			}
+		}
 		http1Only(t)
+		t.DisableCompression = true
 	}
 	if r.unchecked != "" {
 		uncheckTLS(t)
