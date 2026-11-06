@@ -374,7 +374,7 @@ func targetOf(a *agent.Agent) *Target {
 		// type stdio, http or sse as Claude Code's (docs.factory.ai/cli/
 		// configuration/mcp); its personal instructions are ~/.factory/
 		// AGENTS.md, which project files override (cli/configuration/agents-md)
-		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtClaude}
+		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtClaude, NoCmdRefs: true}
 		t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
 		t.Skills = filepath.Join(a.Dir, "skills")
 	case "qoder", "qoder-cn":
@@ -963,8 +963,8 @@ func (l *Library) held(have []*Target) []*Target {
 // ~/.kimi-code/skills besides it (#4379). OmO's engine, senpi, a fork of
 // Pi from after Pi 0.54 (its oldest on npm is 0.74.0), reads it as Pi
 // does (core/package-manager.js, userAgentsSkillsDir, @code-yeongyu/senpi
-// 2026.5.13).
-var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "commandcode", "devin", "droid", "cline", "grok", "grok-app", "fx", "alma", "kimi", "omo"}
+// 2026.5.13). ZCode reads it beside ~/.zcode/skills (#4987).
+var readsShared = []string{"codex", "gemini", "opencode", "deveco", "crush", "dsh", "commandcode", "devin", "droid", "cline", "grok", "grok-app", "fx", "alma", "kimi", "omo", "zcode"}
 
 // Pi reads ~/.agents/skills from 0.54.0 (2026-02-19, its CHANGELOG: "Added
 // default skill auto-discovery for .agents/skills locations … global

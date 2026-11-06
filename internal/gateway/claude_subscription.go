@@ -911,11 +911,44 @@ func (b *subscriptionBridge) startTrusted(ctx context.Context, req *Request, mod
 		return run, events, err
 	}
 	// passed over from now on (passedOver): this run, and the next,
-	// aren't in the caller's folder
+	// aren't in the caller's folder. The conversation's session, kept
+	// (startRun), is gone on with there when it is magpie's folder's: a
+	// run started anew replayed the whole conversation once in each
+	// folder (sleepy_shibe on Discord)
 	b.untrusted.Store(untrusted.key, time.Now())
 	log.Printf("claude: Claude Code asks whether to trust %s, which its user hasn't; the run goes in magpie's own folder, told the caller's", untrusted.dir)
-	req.branch = nil
-	return b.startRun(ctx, req, model, configDir, owner, nil)
+	return b.startRun(ctx, req, model, configDir, owner, from)
+}
+
+// untrustedHere is whether a run in the caller's folder work goes in
+// magpie's own instead: in the interactive mode under the account Claude
+// Code is signed in to, Claude Code would ask whether to trust it, which
+// only the user answers. It is decided for each run as Claude Code
+// decides it (claudeTrusts), before the run, so a conversation whose
+// session is in magpie's folder goes on with it there instead of being
+// replayed in the caller's, asked about and replayed again in magpie's
+// every time passedOver's 10 minutes were up (sleepy_shibe on Discord),
+// and a folder the user trusts since is run in from the next turn on.
+// A folder Claude Code asked about lately all the same stays passed
+// over, as one is while the user's answers can't be read.
+func (b *subscriptionBridge) untrustedHere(req *Request, binary claudeCLI, configDir, work string) bool {
+	if b.passedOver(configDir, work) {
+		return true
+	}
+	if configDir != "" || claudePrintWhy(req, binary) != "" {
+		// a saved account's folder is magpie's, which answers yes, and
+		// claude -p asks nothing
+		return false
+	}
+	trusted, err := claudeTrusts(work)
+	if err != nil {
+		log.Printf("claude: whether Claude Code trusts the caller's folder is unknown (%v); the run goes there", logSafe(err.Error()))
+		return false
+	}
+	if !trusted {
+		log.Printf("claude: Claude Code hasn't been told to trust %s; the run goes in magpie's own folder, told the caller's", logSafe(work))
+	}
+	return !trusted
 }
 
 // startRun is start's Claude Code, from the saved session from when set.
@@ -993,7 +1026,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	work := ""
 	if binary.wsl == nil {
 		work = clientWorkDir(req)
-		if work != "" && b.passedOver(configDir, work) {
+		if work != "" && b.untrustedHere(req, binary, configDir, work) {
 			work = ""
 		}
 	}
@@ -1041,8 +1074,15 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 			b.sweepSessions(sessions)
 		}
 	}
+	// kept is the session from was, for startTrusted to go on with in
+	// magpie's folder when Claude Code asks about the caller's
+	kept := false
 	if from != nil {
-		defer from.discard() // unless the run took it
+		defer func(from *savedSession) {
+			if !kept {
+				from.discard() // unless the run took it
+			}
+		}(from)
 		if sessions == nil || !slices.Equal(from.sessions, sessions) || !from.saved() {
 			from = nil
 		}
@@ -1291,6 +1331,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		if err := run.cliControlWithin(ctx, map[string]any{"subtype": "initialize"}, wait); err != nil {
 			run.abort()
 			if tui && client && configDir == "" && run.saidOnEnd(claudetui.Untrusted) {
+				kept = true
 				return nil, nil, &tuiUntrusted{key: configDir + "\x00" + work, dir: work, err: err}
 			}
 			var unanswered *controlUnanswered
@@ -2614,6 +2655,73 @@ func (b *subscriptionBridge) branch(req *Request, owner string) *savedSession {
 	return nil
 }
 
+// retryBranch is where a turn sent again while its run is busy answering
+// it goes on from a copy of the run's session, cut before the turn
+// (#5405): the client's connection dropped mid-reply, its request was
+// retried, and no cancel reached magpie — the run the first attempt
+// started is still busy with the very turn, and its answer would reach no
+// one. A new Claude Code told the whole conversation writes it all to the
+// cache again, only its own system prompt and tools read from it; the
+// copy is the conversation as Claude Code asked it of Anthropic, whose
+// cache has it, so the retry's own run reads the history from the cache
+// and is told only the turn, as a turn after an unshelve is. nil when no
+// busy run of the owner is answering this very turn (the request it heard
+// is this one, message for message), or the copy can't be
+// made: a client's own cache marks, a session taken back or being taken
+// back (rewound, rewinding), a run started for the turn (its session has
+// no line or reply from before it to cut at), or no session on disk.
+func (b *subscriptionBridge) retryBranch(req *Request, owner string) *savedSession {
+	if req.clientCache != nil {
+		return nil
+	}
+	key, since := nextTurn(req, owner)
+	if key == "" {
+		return nil
+	}
+	keys, want := conversationKeys(owner, req.Messages), historyKey(req.Messages)
+	b.mu.Lock()
+	runs := make([]*subscriptionRun, 0, len(b.runs))
+	for _, run := range b.runs {
+		if run.owned() != owner || run.idleKey != "" || run.convKey == "" || !slices.Contains(keys, run.convKey) {
+			continue
+		}
+		runs = append(runs, run)
+	}
+	b.mu.Unlock()
+	var found *savedSession
+	var at time.Time
+	for _, run := range runs {
+		run.mu.Lock()
+		// the very turn, not one that goes on from it (follows): a turn
+		// whose reply the client has is no retry of it
+		busy := !run.closed && run.rewinding == nil && !run.rewound && run.lean == req.leanPrompt &&
+			!run.clientMarks && (run.tui || !wantTUI(req)) && run.told == want
+		sid, sessions, backLine, backMsg, appended, tui := run.sessionID, slices.Clone(run.sessions), run.backLine, run.backMsg, run.appended, run.tui
+		started := run.started
+		run.mu.Unlock()
+		if !busy || sid == "" || backLine == "" && backMsg == "" || len(sessions) == 0 {
+			continue
+		}
+		if found != nil && !started.After(at) {
+			continue
+		}
+		cut, err := cutReply(sessions, sid, backLine, backMsg)
+		if err != nil {
+			log.Printf("claude: the busy run's session couldn't be cut before the turn sent again (%v)", err)
+			continue
+		}
+		if found != nil {
+			found.discard() // a newer run's copy is taken: the older one's goes
+		}
+		found, at = &savedSession{session: cut, sessions: sessions, owner: owner, at: time.Now(), since: since, tui: tui, appended: appended}, started
+	}
+	if found == nil {
+		return nil
+	}
+	log.Printf("claude: a turn sent again while its run is busy answering it goes on in a branch of its session, cut before the turn")
+	return found
+}
+
 // replyBegun notes a reply message as it begins: its lines in the session
 // come later (lastMsg).
 func (r *subscriptionRun) replyBegun(msg string) {
@@ -3765,6 +3873,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 					Type             string          `json:"type"`
 					Text             string          `json:"text"`
 					Thinking         string          `json:"thinking"`
+					EstimatedTokens  *int            `json:"estimated_tokens"`
 					Signature        string          `json:"signature"`
 					PartialJSON      string          `json:"partial_json"`
 					StopReason       string          `json:"stop_reason"`
@@ -4076,7 +4185,7 @@ func (r *subscriptionRun) readOutput(rd io.Reader) {
 			case "text_delta":
 				said(e.Delta.Text)
 			case "thinking_delta":
-				r.emit(Event{Kind: KThink, Text: e.Delta.Thinking})
+				r.emit(Event{Kind: KThink, Text: e.Delta.Thinking, Estimated: e.Delta.EstimatedTokens})
 			case "signature_delta":
 				r.emit(Event{Kind: KSig, Name: sealAnthropic, Text: e.Delta.Signature})
 			case "input_json_delta":
@@ -5221,6 +5330,14 @@ var (
 	tokenCount = regexp.MustCompile(`^(?:<total_tokens>[^<]*</total_tokens>|Token usage: \S+; \S+ remaining)$`)
 	// reminderTag is a <system-reminder> tag, open or close.
 	reminderTag = regexp.MustCompile(`</?system-reminder(?:\s[^>]*)?>`)
+	// desktopNote is an annotation Claude Desktop (its Claude Code) puts
+	// beside what the run reads, telling it about the picture it scaled
+	// down, where a skill's files live, or that a tool of ToolSearch's
+	// was loaded: the agent's own words about its own work (#5403), never
+	// the user's — the picture itself rides in the tool result. Wide
+	// images read in parallel bring one note each, which may come as one
+	// text joined by blank lines: every note in it is the agent's.
+	desktopNote = regexp.MustCompile(`(?s)^(?:(?:\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by [\d.]+ to map to original image\.\]|Tool loaded\.)\s*)+$|^Base directory for this skill: `)
 )
 
 // midTurnSaid is the user's words in each message they sent mid-turn
@@ -5248,7 +5365,7 @@ func midTurnSaid(text string) []string {
 // token count, or a notice userWords knows (injected).
 func agentNotice(text string) bool {
 	t := strings.TrimSpace(reminderTag.ReplaceAllString(text, ""))
-	if t == "" || hookNotice.MatchString(t) || tokenCount.MatchString(t) {
+	if t == "" || hookNotice.MatchString(t) || tokenCount.MatchString(t) || desktopNote.MatchString(t) {
 		return true
 	}
 	for _, lead := range injected {
@@ -6103,6 +6220,13 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
 		from := s.subscription.unshelve(req, owner)
 		if from == nil {
 			from = req.branch
+		}
+		if from == nil {
+			// a turn sent again while its run is still busy answering it
+			// (#5405): the run goes on from a copy of its session, cut
+			// before the turn, and the retry's run reads the history from
+			// the cache, told only the turn
+			from = s.subscription.retryBranch(req, owner)
 		}
 		if from == nil {
 			if why := s.subscription.whyNoRun(req, owner); why != "" {

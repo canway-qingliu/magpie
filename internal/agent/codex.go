@@ -1298,8 +1298,9 @@ func codexIn(at place) *Agent {
 	}
 	// the model Codex writes its memories with (Yc on Discord): [memories]
 	// extract_model summarises a thread, consolidation_model folds them in
-	// (codex-rs/config/src/types.rs). Unset, Codex takes gpt-5.6-luna and
-	// gpt-5.6-terra, whatever its model; magpie sets both to one pick.
+	// (codex-rs/config/src/types.rs). Unset, Codex takes models of its own
+	// whatever its model (from 0.167.0 gpt-6-luna and gpt-6.1-terra, before
+	// that gpt-5.6-luna and gpt-5.6-terra); magpie sets both to one pick.
 	memories := func() (string, error) {
 		m, err := edit.GetTOMLTable(path, "memories")
 		return cmp.Or(m["consolidation_model"], m["extract_model"]), err
@@ -1947,6 +1948,24 @@ func codexIn(at place) *Agent {
 				return nil
 			}
 			return errors.Join(dropMirrorFailover(), dropBase())
+		},
+		// what no Disconnect could name, marks gone: only what names magpie
+		// itself goes, by the same gates a Disconnect takes them by
+		TakeLeftovers: func() (bool, error) {
+			took := false
+			if viaBase() {
+				if err := dropBase(); err != nil {
+					return false, err
+				}
+				took = true
+			}
+			if asProvider() {
+				if err := dropProvider(); err != nil {
+					return false, err
+				}
+				took = true
+			}
+			return took, nil
 		},
 		OwnVia: codexOwnViaMagpie,
 		SideModel: func() string {
@@ -2850,6 +2869,19 @@ func EndCodexFailover() (ended bool, err error) {
 	}
 	codexDaemonCheck(a.Path)
 	return true, nil
+}
+
+// TakeCodexLeftovers takes out of this machine's Codex config what magpie
+// wrote that no Disconnect could name: the base URL at magpie's gateway,
+// and magpie as its provider, where the marks magpie keeps them by are
+// gone with magpie's own files (#3866). It answers whether it changed
+// anything.
+func TakeCodexLeftovers() (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, err
+	}
+	return codex(home).TakeLeftovers()
 }
 
 // RelayOpenCodex leaves a relay at the gateway's address for the Codex
