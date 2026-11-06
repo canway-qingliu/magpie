@@ -14,6 +14,13 @@ cipher suites, curves and ALPN before the HTTP/1.1 route clears ALPN. Go's
 similar profile, not a byte-for-byte rustls fingerprint. The Codex route also
 disables automatic compression so Go does not add `Accept-Encoding: gzip`.
 
+An HTTP/1.1 route from another source — a provider the user asked to be
+spoken HTTP/1.1 to (`netproxy.WithHTTP1`), or a host whose HTTP/2 connection
+failed a TLS record and is spoken HTTP/1.1 to for six hours
+(`netproxy.h2BrokenFor`) — is not the ChatGPT backend's route. It keeps the
+base transport's TLS configuration and its automatic compression: Codex's
+profile is Codex's, and is not put on another vendor's connections.
+
 ## Request identity
 
 The Codex backend preserves the caller's identity headers when
