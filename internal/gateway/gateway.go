@@ -580,8 +580,10 @@ func New() *Server {
 	s := &Server{
 		// a request counted against a MaxRPM waits for room in its minute
 		// first (rpm.go); the ChatGPT backend is spoken to over HTTP/1.1
-		// (netproxy.HTTP1, which provider/codex_http1.go sets)
-		client:       &http.Client{Transport: rpmTransport{upstreamTransport()}},
+		// (netproxy.HTTP1, which provider/codex_http1.go sets); a vendor's
+		// redirect is followed to its own origin only, so its key goes
+		// nowhere else (provider.KeepsCredentials)
+		client:       &http.Client{Transport: rpmTransport{upstreamTransport()}, CheckRedirect: provider.KeepsCredentials},
 		unfit:        make(map[string]bool),
 		subscription: newSubscriptionBridge(),
 		debug:        os.Getenv("MAGPIE_DEBUG") != "",
@@ -5036,6 +5038,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	tries := 0 // the request's tries, as its route lists them
 	s.trace.update(tr, func(t *Route) {
 		t.Done, t.Status, t.Error, t.Millis = true, call.Status, call.Error, call.Millis
+		// the id the agent reads beside the reply, so the session that
+		// keeps it can be found after the fact (dsh's replays)
+		t.ResponseID = call.Usage.ResponseID
 		tries = len(t.Tries) + reasked
 		if t.TitleLink != nil && isTitleKind(t.Kind) && call.Status < 400 && call.Error == "" && !call.ResponseTruncated {
 			link := *t.TitleLink
@@ -5391,6 +5396,14 @@ func (s *Server) forward(ctx context.Context, p provider.Provider, to provider.P
 		ctx = context.WithValue(ctx, dsSentKey{}, &dsSent{})
 	}
 	res, err = s.forwardOnce(ctx, p, to, path, body, in)
+	if err != nil {
+		// a Remote magpie whose computer came back at another address
+		// is asked there (provider's remote_moved.go)
+		if q, ok := provider.SeekMoved(ctx, p, err); ok {
+			p = q
+			res, err = s.forwardOnce(ctx, p, to, path, body, in)
+		}
+	}
 	if err == nil && res.StatusCode >= 400 {
 		// a file DeepSeek no longer holds: uploaded again, or the
 		// images sent inline (deepseek_files.go)
@@ -6629,7 +6642,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 		keepRetry(w.Header(), res.Header, b)
 		u.ErrType = provider.ErrorType(b)
-		return writeVendorError(w, proto, res.StatusCode, msg, b), msg, true
+		if codexOutRefusal(p, proto, res.StatusCode, b) {
+			return writeCodexOut(w, res.Header, res.StatusCode, msg, b), msg, true
+		}
+		return writeVendorErrorFrom(w, proto, proto, p, res, msg, b), msg, true
 	}
 	if remote != nil && res.Header.Get(KeptTurnHeader) != "" {
 		// the other magpie kept the turn: what it answered is kept here
@@ -8411,7 +8427,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		if turnedAway {
 			u.ErrType = turnedAwayErrType
 		}
-		return writeVendorError(w, from, res.StatusCode, msg, b), msg
+		return writeVendorErrorFrom(w, from, actual, p, res, msg, b), msg
 	}
 	dec := carryReasoning(decoderFor(p, actual, request.Tools), from, actual)
 	rd, sse := eventStream(res)
@@ -10019,6 +10035,9 @@ func writeVendorError(w http.ResponseWriter, proto provider.Protocol, status int
 	return writeErrorSaid(w, proto, status, msg, code, param)
 }
 
+// requestBytesHint is what a 413 is told: a cap on the request's bytes.
+const requestBytesHint = "This is a request-body byte limit, not the model's context: compact the conversation (/compact in Codex or Claude Code), or start a new one with a short summary; fewer images or smaller tool results also help."
+
 // writeErrorSaid is writeError with the code and param an OpenAI-shaped
 // answer names, nil for none.
 func writeErrorSaid(w http.ResponseWriter, proto provider.Protocol, status int, msg string, code, param any) int {
@@ -10053,9 +10072,8 @@ func writeErrorSaid(w http.ResponseWriter, proto provider.Protocol, status int, 
 		}
 	}
 	if h, held := w.(*holdWriter); status == http.StatusRequestEntityTooLarge && (!held || !h.hold) {
-		const hint = "This is a request-body byte limit, not the model's context: compact the conversation (/compact in Codex or Claude Code), or start a new one with a short summary; fewer images or smaller tool results also help."
-		if !strings.Contains(msg, hint) {
-			msg += " — " + hint
+		if !strings.Contains(msg, requestBytesHint) {
+			msg += " — " + requestBytesHint
 		}
 	}
 	var v any
