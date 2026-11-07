@@ -33,25 +33,59 @@ func codexTLSConfig() *tls.Config {
 	return config
 }
 
-// sanitizeNonCodexHeaders gives non-Codex callers an honest, stable
-// User-Agent and strips headers that identify their client, terminal or
-// Codex session before the request reaches the ChatGPT backend.
+// codexRequestHeader says a header says what the request itself is, and
+// not who the caller is: the Lite flag, which says the request is a
+// Responses-Lite one and goes with it (the backend reads it, and the
+// socket path moves it into the message's client_metadata).
+//
+// It is the one of the backend's headers about a request that is not the
+// caller's own (codexHeader): every other one says which call it is,
+// which turn of the conversation, or which conversation.
+func codexRequestHeader(k string) bool {
+	return strings.EqualFold(k, liteHeader)
+}
+
+// codexCallerHeader says a header of the caller's is the caller's own
+// identity and not the backend's: what the backend reads a turn by
+// (codexHeader — the call kind, the turn's metadata, the session the
+// conversation is cached under) and the caller's own name (its User-Agent
+// and originator).
+//
+// A caller that is Codex sends them and they go: they are how the backend
+// reads a Codex turn, and how it finds a conversation's cached prompt. A
+// caller that is not Codex sends none of them: the backend would read the
+// request as a Codex turn, and it is not one. What the request itself is
+// goes with it (codexRequestHeader).
+//
+// The sign-in's own headers are not among them (codexSignInHeader): the
+// credential and the device attestation are what the request is sent with,
+// and what holds for an account's plan alone is that account's.
+func codexCallerHeader(k string) bool {
+	switch strings.ToLower(k) {
+	case "user-agent", "originator":
+		return true
+	}
+	return codexHeader(k) && !codexRequestHeader(k)
+}
+
+// sanitizeNonCodexHeaders gives a caller that is not Codex an honest,
+// stable User-Agent and takes away what says which client, terminal or
+// Codex session the request came from (codexCallerHeader), so the ChatGPT
+// backend does not read a request that is not Codex's as one.
+//
+// The sign-in's own headers stay (codexSignInHeader): the credential and
+// the device attestation are what the request is sent with, the turn
+// state's routing is the backend's, and what holds for the account's plan
+// alone is that account's. So does magpie's own header (x-magpie-): it
+// is the window's, not the backend's.
 func sanitizeNonCodexHeaders(h http.Header) {
-	h.Set("User-Agent", fmt.Sprintf("magpie/%s", Version))
-	h.Del("Originator")
 	for name := range h {
 		key := strings.ToLower(name)
-		// Turn state is an account-specific routing token, not caller identity.
-		// The WebSocket path moves it into client_metadata, and the HTTP path
-		// forwards it to the ChatGPT backend.
-		if strings.HasPrefix(key, "x-magpie-") ||
-			(strings.HasPrefix(key, "x-codex-") && key != "x-codex-turn-state") ||
-			key == "x-openai-subagent" || key == "x-openai-memgen-request" ||
-			key == "session-id" || key == "thread-id" || key == "session_id" ||
-			key == "conversation_id" || key == "x-client-request-id" {
-			h.Del(name)
+		if codexCallerHeader(key) || strings.HasPrefix(key, "x-magpie-") {
+			delete(h, name)
 		}
 	}
+	h.Set("User-Agent", fmt.Sprintf("magpie/%s", Version))
 	if h.Get("Accept") == "" {
 		h.Set("Accept", "application/json")
 	}

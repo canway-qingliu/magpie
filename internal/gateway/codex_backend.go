@@ -1993,6 +1993,22 @@ func hopHeader(k string) bool {
 	return false
 }
 
+// codexSignInHeader says a header of the request is the sign-in's own, or
+// what holds for the account that sign-in is for alone, and not what the
+// backend reads a turn by: the credential, Codex's device attestation (its
+// own sign-in's), x-openai-codex-luna-reserve, which says Codex's own plan's
+// allowance is used up (another account's may not be), and x-codex-turn-state,
+// the backend's routing of the turn for that account.
+//
+// They go with the sign-in that is used — the account's, when an account
+// signs, the caller's own, when the caller signs for itself — so they are
+// never the caller's own identity to be taken away (codexCallerHeader).
+func codexSignInHeader(k string) bool {
+	k = strings.ToLower(k)
+	return strings.Contains(k, "authorization") || k == "x-oai-attestation" ||
+		k == "x-openai-codex-luna-reserve" || k == "x-codex-turn-state"
+}
+
 // codexHeader is one of the headers Codex tells the ChatGPT backend about
 // a request by, which go on with it when a pool account signs it as they
 // do when Codex's own sign-in does (codexUpstream): x-openai-subagent (a
@@ -2000,13 +2016,10 @@ func hopHeader(k string) bool {
 // x-codex-turn-metadata, its installation, window and parent thread, and
 // the session. Never a sign-in: the account's own goes in its place, and
 // Codex's device attestation is its own sign-in's. Nor what holds for
-// Codex's own account alone: x-openai-codex-luna-reserve, which says its
-// plan's allowance is used up (another account's may not be), and
-// x-codex-turn-state, the backend's routing of the turn for that account.
+// Codex's own account alone (codexSignInHeader).
 func codexHeader(k string) bool {
 	k = strings.ToLower(k)
-	if strings.Contains(k, "authorization") || k == "x-oai-attestation" ||
-		k == "x-openai-codex-luna-reserve" || k == "x-codex-turn-state" {
+	if codexSignInHeader(k) {
 		return false
 	}
 	switch k {
