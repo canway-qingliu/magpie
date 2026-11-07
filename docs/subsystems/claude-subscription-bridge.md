@@ -467,8 +467,25 @@ A refused request never ran, so it isn't the editor's last request
 (`noteClaudeRun`). The model test's and warm-up's "hi" (`askClaude`) goes
 through the helper too (`askClaudeTUI`), in stream-json, and its stdin is
 closed at the first result. Reading the plan's allowance (`/usage`,
-`claudeUsageTUI`) types `/usage` in the interactive mode too: the helper
-is told `{"type":"command","command":"/usage"}`, types it, waits for the
+`claudeUsage`) never starts the interactive mode, on or off: it runs
+`claude -p /usage` (`claudeUsageArgs`, #5582). The interactive Claude
+Code 2.1.316 sends a model request as it starts, before anything is
+typed (`probeQuotaStatus`: haiku, `max_tokens` 1, content "quota"),
+unless `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set, which also
+keeps `/usage` from loading ("Failed to load usage data"). That request
+counts, so on an idle account it started the five-hour window: from
+v0.1.2635 to the fix, magpie's reads at its start and as a window ended
+opened the user's window with warm-up off (recorded behind a proxy that
+answers everything itself). `-p` sends that request only when
+interactive, so its `/usage` asks the usage endpoint alone
+(`/api/oauth/usage`), and for a subscription's sign-in (the
+`user:profile` scope) prints the plan's windows as the lines
+`provider.parseClaudeUsage` reads. Only a sign-in without that scope (a
+setup-token, which magpie never reads, or an API key) gets the session's
+cost instead. `TestClaudeUsageStartsNoInteractiveRun` holds it.
+
+The helper still takes a typed `/usage`, and nothing of magpie's sends it
+now: it is told `{"type":"command","command":"/usage"}`, types it, waits for the
 panel's windows ("NN% used", `commandSettle` still) and closes it with
 Esc. A panel with no window (its words saying why) is taken as drawn only
 once its Settings tabs show and nothing is loading (`usageDrawn`), still
@@ -479,8 +496,7 @@ With no panel by `commandWait`, the result is an error saying what was
 last drawn (`TestShimWaitsPastTheBanner`, `TestUsageDrawn`). Its result (`local_command: "usage"`) says each window as -p's lines
 do, "Current session: 99% used · resets 7pm (Asia/Shanghai)" (`usageText`,
 tested on the bytes Claude Code 2.1.316 drew, `testdata/usage-2.1.316.bin`),
-for `provider.parseClaudeUsage`. Claude Code 2.1.316's `-p /usage`
-printed only the session's cost there, no window, in a real run.
+for `provider.parseClaudeUsage`.
 The helper reads the screen as a terminal shows it (`grid`,
 [`screen.go`](../../internal/claudetui/screen.go), 200 by 50, the size
 the pseudo-terminal and Windows' pseudo console are made, from one
@@ -518,7 +534,7 @@ koohoko5924 on Discord, a Claude Enterprise account, on panels built from
 until …") are failures as "Failed to load usage data" is
 (`TestShimToldWhyUsageFailed`).
 
-These one-off interactive runs (`askClaudeTUI`, `claudeUsageTUI`) work in
+These one-off interactive runs (`askClaudeTUI`) work in
 magpie's shared work folder (`oneOffDir`: `claudeWorkDir`, a fresh temp
 folder only when it can't be made), where the helper may answer the trust
 question, so a config directory holds one trusted entry for it instead of
@@ -551,7 +567,7 @@ waiting for it" (`oneOffErr`), and the card says the reason
 tooltip. A question about trust left unanswered at the deadline is named
 with its folder ("Claude Code asked whether to trust <folder>, not answered
 in the 16.8s …"), where it said "showed no prompt" before (#4830). A failed
-run also goes to app.log (`logOneOff`: "claude: a /usage read of saved
+run also goes to app.log (`logOneOff`: "claude: a test on haiku of saved
 account <dir> failed: …"), with the helper's whole reason, which the card
 clips to 300 bytes, on one line: the home folder and any
 `/Users/<name>` or `C:\Users\<name>` become `~`, secrets go through
@@ -630,6 +646,20 @@ as the helper waited, and every try was answered 502 "Claude Code has
 not answered magpie's initialize request in 10s" (#4504). A helper that
 answers nothing even then is ended (`tuiNoStart`), and the turn fails
 saying the interactive mode didn't start; the next turn tries it again.
+So does a helper that ends saying why Claude Code didn't come up ("claude-tui:
+…"), unless Claude Code ended itself first (`claudetui.EndedEarly`, as one
+that can't load its session does): a new Claude Code told the whole
+conversation waits on the same thing, and the turn was answered 502 after
+twice 45s (sowhynot). `TestClaudeTUINoPromptNotTriedAgain` holds both.
+A Claude Code that drew nothing in that time (0 bytes read) is said with
+what it runs meanwhile, from `ps` (`undrawn`, macOS and Linux): its
+Keychain read of its sign-in, `security find-generic-password`, has no
+time limit in Claude Code, and one held by a Keychain window or a locked
+keychain is named with what to do; any other command is named by its
+program alone, never its arguments. The helper doesn't end early on 0
+bytes: a Keychain window may still be answered, and Claude Code bounds its
+own network waits (about 30s) before it draws.
+`TestShimSaysWhatAnUndrawnClaudeWaitsOn` holds it.
 
 ## Why turns go on in one run
 
