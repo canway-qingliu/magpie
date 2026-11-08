@@ -23,7 +23,7 @@ type relayUp struct {
 }
 
 type relayGot struct {
-	path, auth, body, encoding string
+	path, auth, body, encoding, ua string
 }
 
 func newRelayUp(t *testing.T) *relayUp {
@@ -32,7 +32,7 @@ func newRelayUp(t *testing.T) *relayUp {
 	up.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		up.mu.Lock()
-		up.got = append(up.got, relayGot{r.URL.Path, r.Header.Get("Authorization"), string(b), r.Header.Get("Content-Encoding")})
+		up.got = append(up.got, relayGot{r.URL.Path, r.Header.Get("Authorization"), string(b), r.Header.Get("Content-Encoding"), r.UserAgent()})
 		up.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(up.code)
@@ -181,5 +181,27 @@ func TestCodexRelayIsNotMagpie(t *testing.T) {
 	// a WebSocket is sent to plain HTTP, as the gateway does
 	if rec := relayDo(h, "GET", "127.0.0.1:3425", CodexPath+"/responses", "", map[string]string{"Upgrade": "websocket"}); rec.Code != http.StatusUpgradeRequired {
 		t.Fatalf("websocket: %d", rec.Code)
+	}
+}
+
+// A turn the relay passes on for a Codex thread open when magpie quit
+// goes with the User-Agent the caller sent, and with magpie's own when
+// it sent none: never with Go's default ("Go-http-client/1.1"), which
+// says what magpie is written in.
+func TestCodexRelayGoesAsMagpieWithoutAU(t *testing.T) {
+	fresh(t)
+	up := newRelayUp(t)
+	h := CodexRelay()
+	rec := relayDo(h, "POST", "127.0.0.1:3425", CodexPath+"/responses", `{"model":"gpt-5.5","input":"hi","stream":true}`,
+		map[string]string{"Authorization": "Bearer chatgpt-token", "Content-Type": "application/json"})
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	got := up.sent()
+	if len(got) != 1 {
+		t.Fatalf("upstream was sent %+v", got)
+	}
+	if got[0].ua != "magpie/"+Version {
+		t.Errorf("the turn went with User-Agent %q, want magpie/%s", got[0].ua, Version)
 	}
 }

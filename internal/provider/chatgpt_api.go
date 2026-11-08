@@ -72,6 +72,25 @@ const (
 
 var siwcClient = &http.Client{Timeout: 30 * time.Second, CheckRedirect: KeepsCredentials}
 
+// siwcRequest is a request magpie makes to OpenAI about a ChatGPT
+// account: the code trade, the refresh, the revocation and the model's
+// list.
+//
+// It goes with magpie's own name (magpieOwnUA), never with Go's
+// default ("Go-http-client/1.1"), which says what magpie is written in.
+// This path is another client than Codex — a ChatGPT plan used through
+// OpenAI's own API, not Codex CLI on ChatGPT's backend — so it wears no
+// Codex name either (codexClientHeaders is for the accounts of the
+// backend).
+func siwcRequest(ctx context.Context, method, u string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", magpieOwnUA)
+	return req, nil
+}
+
 // siwcNoUsage is what a ChatGPT API account's usage line says: OpenAI's
 // API tells no plan usage, and the account added as ChatGPT (Codex's
 // backend) does.
@@ -328,7 +347,7 @@ func (e *siwcTokenError) Error() string {
 }
 
 func siwcPostToken(ctx context.Context, form url.Values) (siwcTokenReply, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, siwcTokenURL, strings.NewReader(form.Encode()))
+	req, err := siwcRequest(ctx, http.MethodPost, siwcTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return siwcTokenReply{}, err
 	}
@@ -459,7 +478,7 @@ func siwcFresh(ctx context.Context, user string, force bool) (siwcCreds, error) 
 // siwcRevoke has OpenAI revoke an account's refresh token, at the
 // revocation endpoint its discovery document names.
 func siwcRevoke(ctx context.Context, c siwcCreds) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(siwcIssuer, "/")+"/.well-known/openid-configuration", nil)
+	req, err := siwcRequest(ctx, http.MethodGet, strings.TrimRight(siwcIssuer, "/")+"/.well-known/openid-configuration", nil)
 	if err != nil {
 		return err
 	}
@@ -476,7 +495,7 @@ func siwcRevoke(ctx context.Context, c siwcCreds) error {
 		return errors.New("ChatGPT: OpenAI names no revocation endpoint")
 	}
 	form := url.Values{"token": {c.Refresh}, "token_type_hint": {"refresh_token"}, "client_id": {c.ClientID}}
-	req, err = http.NewRequestWithContext(ctx, http.MethodPost, d.Revoke, strings.NewReader(form.Encode()))
+	req, err = siwcRequest(ctx, http.MethodPost, d.Revoke, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
@@ -500,7 +519,7 @@ func siwcFetchModels(ctx context.Context, user string) ([]catalog.Model, error) 
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(siwcAPI, "/")+"/models", nil)
+	req, err := siwcRequest(ctx, http.MethodGet, strings.TrimRight(siwcAPI, "/")+"/models", nil)
 	if err != nil {
 		return nil, err
 	}

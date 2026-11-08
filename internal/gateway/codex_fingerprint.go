@@ -102,3 +102,19 @@ func sanitizeNonCodexHeaders(h http.Header) {
 }
 
 func isCodexClient(r *http.Request) bool { return fromCodex(r.Header) }
+
+// codexUAFor gives a request to the ChatGPT backend a User-Agent of its
+// own when it came with none: the caller's, when it sent one, magpie's
+// when it did not.
+//
+// A request that goes out with no User-Agent goes with Go's own default
+// ("Go-http-client/1.1"), which says what magpie is written in — nothing
+// the backend needs to know, and a thing worth not telling a vendor
+// whose terms magpie is careful with. A caller that names itself Codex
+// by its originator alone keeps that name, but speaks as magpie, which
+// is what magpie can vouch for.
+func codexUAFor(req *http.Request) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", magpieUA())
+	}
+}

@@ -78,6 +78,9 @@ func CodexRelay() http.Handler {
 			return
 		}
 		copyHeaders(req.Header, r.Header)
+		// a caller that named no client of its own is answered as magpie,
+		// never with Go's default User-Agent
+		codexUAFor(req)
 		req.Header.Del("Accept-Encoding")
 		provider.CodexCompressed(req, body)
 		res, err := client.Do(req)

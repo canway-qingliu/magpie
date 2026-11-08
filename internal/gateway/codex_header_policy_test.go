@@ -183,3 +183,69 @@ func TestCodexTurnReachesOpenAIAsItCame(t *testing.T) {
 		}
 	}
 }
+
+// A request to the ChatGPT backend that came with no User-Agent of its
+// own goes out with magpie's: Go's own default ("Go-http-client/1.1")
+// says what magpie is written in, and a vendor whose terms magpie is
+// careful with has no use for that.
+func TestCodexRequestWithoutUAGoesAsMagpie(t *testing.T) {
+	codexSignedIn(t)
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		io.WriteString(w, `{"models":[]}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", CodexPath+"/models", nil)
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	s.Handler().ServeHTTP(rec, req)
+	if len(heads) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := heads[0].Get("User-Agent"); got != "magpie/"+Version {
+		t.Errorf("the model list went with User-Agent %q, want magpie/%s", got, Version)
+	}
+}
+
+// A caller that names itself Codex by its originator alone, and sends no
+// User-Agent of its own, keeps that name and speaks as magpie: the
+// backend is not told which client magpie is written in.
+func TestCodexTurnWithoutUAGoesAsMagpie(t *testing.T) {
+	codexSignedIn(t)
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		w.WriteHeader(429)
+		io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("Originator", "codex_cli_rs")
+	s.Handler().ServeHTTP(rec, req)
+	if len(heads) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	h := heads[0]
+	if got := h.Get("User-Agent"); got != "magpie/"+Version {
+		t.Errorf("the turn went with User-Agent %q, want magpie/%s", got, Version)
+	}
+	if got := h.Get("Originator"); got != "codex_cli_rs" {
+		t.Errorf("Originator = %q, want the caller's own", got)
+	}
+}

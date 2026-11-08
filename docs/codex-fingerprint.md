@@ -76,6 +76,15 @@ The Codex relay used when magpie is not running is a separate path for Codex's
 own ChatGPT sign-in. It forwards Codex's request identity and removes
 `Accept-Encoding`; the HTTP/1.1 transport prevents Go from adding it again.
 
+Every request to the backend carries a User-Agent: the caller's, when it
+sent one, magpie's own when it did not (`codexUAFor`). A request that
+goes out with no User-Agent goes with Go's own default
+(`Go-http-client/1.1`), which says what magpie is written in — nothing the
+backend needs to know, and a thing worth not telling a vendor whose terms
+magpie is careful with. A caller that names itself Codex by its
+`originator` alone keeps that name and speaks as magpie, which is what
+magpie can vouch for.
+
 ## Sources
 
 - TLS profile and non-Codex header sanitation:

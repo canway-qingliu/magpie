@@ -1214,6 +1214,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			if !isCodexClient(r) {
 				sanitizeNonCodexHeaders(req.Header)
 			}
+			// a caller that named no client of its own is answered as
+			// magpie, never with Go's default User-Agent
+			codexUAFor(req)
 			if on != nil {
 				// the account's own token and id in place of the sign-in's;
 				// what Codex said it takes back stays as it said it
@@ -2222,6 +2225,9 @@ func (s *Server) askCodexList(rctx context.Context, h http.Header, query string,
 		return
 	}
 	copyHeaders(req.Header, h)
+	// a caller that named no client of its own is answered as magpie,
+	// never with Go's default User-Agent
+	codexUAFor(req)
 	// the whole list, shared by every caller, whatever one of them had
 	for _, k := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
 		req.Header.Del(k)
