@@ -36,10 +36,20 @@ is cached under. They are relayed as they came, as upstream does: a
 caller that speaks Codex's dialect (an agent that names its call kind)
 keeps naming it.
 
+A caller that is Codex keeps its own User-Agent on that route too: the
+account signs the request as Codex, but the client that sent it is the one
+that says which client, system and terminal it is, and nothing else of
+that string is changed. Its own `originator` goes with it, which says the
+same of it. Only the version is: never older than the version the request
+is signed as, because the backend serves a model only to a client new
+enough for it (a request that says it is an older Codex is refused the
+newest models, "The 'gpt-6.1-sol' model is not supported when using Codex
+with a ChatGPT account").
+
 The caller signs for itself: its own ChatGPT token goes with the request,
 as it came. Then the caller's own client, terminal and Codex session are
-taken away and magpie's own name is sent instead, so the backend does not
-read a request that is not Codex's as one.
+taken away and Codex's own name is sent instead, so the backend reads
+every request for a Codex model as the Codex request it is.
 
 The two lists are one file's business, and say where they differ:
 
@@ -56,17 +66,17 @@ The two lists are one file's business, and say where they differ:
 - `codexCallerHeader` — the caller's own identity: what the backend reads
   a turn by, less what the request itself is, plus the caller's own name
   (its `User-Agent` and `originator`). A caller that is not Codex has
-  none of it sent.
+  none of it sent: Codex's own name is sent instead.
 
 The last one is derived from the first, so a header the backend starts to
 read is taken away from a caller that is not Codex until somebody says it
-is about the request and not the caller. `sanitizeNonCodexHeaders` sets
-`User-Agent` to `magpie/<version>`, takes away what `codexCallerHeader`
-names and what is magpie's own (`x-magpie-`), and removes
-`Accept-Encoding`. It does not read or transmit `TERM_PROGRAM`,
-`TERM_PROGRAM_VERSION` or `TERM`. Generic request headers such as
-`Accept`, `Accept-Language`, `Cache-Control` and `Pragma` are preserved or
-filled with defaults.
+is about the request and not the caller. `sanitizeNonCodexHeaders` puts
+Codex's own identity on the request — its `User-Agent`, its `originator`
+and its `version` — takes away what `codexCallerHeader` names and what
+is magpie's own (`x-magpie-`), and removes `Accept-Encoding`. It does not
+read or transmit `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` or `TERM`.
+Generic request headers such as `Accept`, `Accept-Language`,
+`Cache-Control` and `Pragma` are preserved or filled with defaults.
 
 A Codex request keeps its own identity: `fromCodex` recognizes a Codex
 CLI, desktop client, ACP adapter or hosted Codex request, and its headers
@@ -76,19 +86,28 @@ The Codex relay used when magpie is not running is a separate path for Codex's
 own ChatGPT sign-in. It forwards Codex's request identity and removes
 `Accept-Encoding`; the HTTP/1.1 transport prevents Go from adding it again.
 
-Every request to the backend carries a User-Agent: the caller's, when it
-sent one, magpie's own when it did not (`codexUAFor`). A request that
-goes out with no User-Agent goes with Go's own default
-(`Go-http-client/1.1`), which says what magpie is written in — nothing the
-backend needs to know, and a thing worth not telling a vendor whose terms
-magpie is careful with. A caller that names itself Codex by its
-`originator` alone keeps that name and speaks as magpie, which is what
-magpie can vouch for.
+Every request to the backend carries Codex's User-Agent: the caller's own,
+when the caller is Codex and it sent one, and Codex's own where the caller
+sent none (`codexIdentityFor`) or where the caller is not Codex at all
+(`sanitizeNonCodexHeaders`). A request that goes out with no User-Agent
+goes with Go's own default (`Go-http-client/1.1`), which says what magpie
+is written in — nothing the backend needs to know, and a thing worth not
+telling a vendor whose terms magpie is careful with. A caller that names
+itself Codex by its `originator` alone keeps that name and is given
+Codex's User-Agent.
+
+The version is what the backend gates its newest models on, so the one in
+a User-Agent is never older than the version the request is signed as
+(`codexUserAgentFor`). A client's own User-Agent keeps its system and
+terminal; only that version is raised, where it is older.
 
 ## Sources
 
 - TLS profile and non-Codex header sanitation:
   [`codex_fingerprint.go`](../internal/gateway/codex_fingerprint.go)
+- Codex's own identity, the User-Agent a request goes with and the version
+  in it:
+  [`codex_request.go`](../internal/provider/codex_request.go)
 - The header lists and the backend they answer for:
   [`codex_backend.go`](../internal/gateway/codex_backend.go),
   [`additional_tools.go`](../internal/gateway/additional_tools.go)

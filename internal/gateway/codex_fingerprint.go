@@ -2,9 +2,10 @@ package gateway
 
 import (
 	"crypto/tls"
-	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // codexTLSConfig is used only for requests to the ChatGPT backend. It follows
@@ -68,10 +69,10 @@ func codexCallerHeader(k string) bool {
 	return codexHeader(k) && !codexRequestHeader(k)
 }
 
-// sanitizeNonCodexHeaders gives a caller that is not Codex an honest,
-// stable User-Agent and takes away what says which client, terminal or
-// Codex session the request came from (codexCallerHeader), so the ChatGPT
-// backend does not read a request that is not Codex's as one.
+// sanitizeNonCodexHeaders gives a caller that is not Codex the identity of
+// a Codex client and takes away what says which client, terminal or Codex
+// session the request came from (codexCallerHeader), so the ChatGPT
+// backend reads every request for a Codex model as the Codex request it is.
 //
 // The sign-in's own headers stay (codexSignInHeader): the credential and
 // the device attestation are what the request is sent with, the turn
@@ -85,7 +86,9 @@ func sanitizeNonCodexHeaders(h http.Header) {
 			delete(h, name)
 		}
 	}
-	h.Set("User-Agent", fmt.Sprintf("magpie/%s", Version))
+	// the request is a request for a Codex model, so it goes as a Codex
+	// client: Codex's own name, not the caller's and not magpie's
+	provider.CodexClientIdentity(h)
 	if h.Get("Accept") == "" {
 		h.Set("Accept", "application/json")
 	}
@@ -103,18 +106,21 @@ func sanitizeNonCodexHeaders(h http.Header) {
 
 func isCodexClient(r *http.Request) bool { return fromCodex(r.Header) }
 
-// codexUAFor gives a request to the ChatGPT backend a User-Agent of its
-// own when it came with none: the caller's, when it sent one, magpie's
-// when it did not.
+// codexAccountTurn says a turn to a ChatGPT account came from a Codex
+// client: the account is one of the ChatGPT backend's, and the client
+// names itself Codex (fromCodex).
+func codexAccountTurn(p provider.Provider, in http.Header) bool {
+	return p.Account != nil && p.Account.Agent == "codex" && fromCodex(in)
+}
+
+// codexIdentityFor gives a request to the ChatGPT backend the identity of a
+// Codex client, where it names no client of its own: its User-Agent, its
+// originator and the version that go with them.
 //
 // A request that goes out with no User-Agent goes with Go's own default
 // ("Go-http-client/1.1"), which says what magpie is written in — nothing
-// the backend needs to know, and a thing worth not telling a vendor
-// whose terms magpie is careful with. A caller that names itself Codex
-// by its originator alone keeps that name, but speaks as magpie, which
-// is what magpie can vouch for.
-func codexUAFor(req *http.Request) {
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", magpieUA())
-	}
+// the backend needs to know, and a thing worth not telling a vendor whose
+// terms magpie is careful with.
+func codexIdentityFor(req *http.Request) {
+	provider.CodexClientIdentity(req.Header)
 }

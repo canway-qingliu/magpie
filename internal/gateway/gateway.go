@@ -5725,7 +5725,20 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	// (OpenCode's, Cline's, Kilo's) and the user's own header put theirs
 	// on after
 	ua := agentUA(ctx, in)
-	req.Header.Set("User-Agent", userAgentFor(p, ua))
+	if codexAccountTurn(p, in) {
+		// a Codex client's own User-Agent: the account signs the turn as
+		// Codex, and the client that sent it is the one that says which
+		// client, system and terminal it is. Its signing keeps it, and
+		// never lets its version be older than the one it signs as
+		// (codexUserAgentFor).
+		req.Header.Set("User-Agent", ua)
+		// and its own originator, which says the same of it
+		if o := in.Get("originator"); o != "" {
+			req.Header.Set("originator", o)
+		}
+	} else {
+		req.Header.Set("User-Agent", userAgentFor(p, ua))
+	}
 	if to == provider.Anthropic {
 		req.Header.Set("anthropic-version", "2023-06-01")
 		for _, h := range []string{"anthropic-version", "anthropic-beta"} {

@@ -185,10 +185,10 @@ func TestCodexRelayIsNotMagpie(t *testing.T) {
 }
 
 // A turn the relay passes on for a Codex thread open when magpie quit
-// goes with the User-Agent the caller sent, and with magpie's own when
-// it sent none: never with Go's default ("Go-http-client/1.1"), which
-// says what magpie is written in.
-func TestCodexRelayGoesAsMagpieWithoutAU(t *testing.T) {
+// goes with the User-Agent the caller sent, and with Codex's own when it
+// sent none: never with Go's default ("Go-http-client/1.1"), which says
+// what magpie is written in.
+func TestCodexRelayGoesAsCodexWithoutAU(t *testing.T) {
 	fresh(t)
 	up := newRelayUp(t)
 	h := CodexRelay()
@@ -201,7 +201,7 @@ func TestCodexRelayGoesAsMagpieWithoutAU(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("upstream was sent %+v", got)
 	}
-	if got[0].ua != "magpie/"+Version {
-		t.Errorf("the turn went with User-Agent %q, want magpie/%s", got[0].ua, Version)
+	if !strings.HasPrefix(got[0].ua, "codex_cli_rs/") {
+		t.Errorf("the turn went with User-Agent %q, want Codex's own", got[0].ua)
 	}
 }

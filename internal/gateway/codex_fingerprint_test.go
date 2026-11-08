@@ -25,9 +25,6 @@ func TestCodexTLSConfig(t *testing.T) {
 }
 
 func TestSanitizeNonCodexHeaders(t *testing.T) {
-	oldVersion := Version
-	Version = "test-version"
-	t.Cleanup(func() { Version = oldVersion })
 	t.Setenv("TERM_PROGRAM", "Private Terminal")
 	t.Setenv("TERM_PROGRAM_VERSION", "99.1")
 	t.Setenv("TERM", "private-term")
@@ -41,16 +38,21 @@ func TestSanitizeNonCodexHeaders(t *testing.T) {
 		"Accept-Encoding":       {"gzip"},
 	}
 	sanitizeNonCodexHeaders(h)
-	if got := h.Get("User-Agent"); got != "magpie/test-version" {
-		t.Errorf("User-Agent = %q", got)
+	// the request is for a Codex model, so it goes as a Codex client
+	if got := h.Get("User-Agent"); !strings.HasPrefix(got, "codex_cli_rs/") {
+		t.Errorf("User-Agent = %q, want Codex's own", got)
 	}
-	for _, name := range []string{"Originator", "X-Codex-Turn-Metadata", "Session-Id", "X-Openai-Subagent", "X-Magpie-Session", "Accept-Encoding"} {
+	if got := h.Get("Originator"); got != "codex_cli_rs" {
+		t.Errorf("Originator = %q, want Codex's own", got)
+	}
+	for _, name := range []string{"X-Codex-Turn-Metadata", "Session-Id", "X-Openai-Subagent", "X-Magpie-Session", "Accept-Encoding"} {
 		if got := h.Get(name); got != "" {
 			t.Errorf("%s leaked as %q", name, got)
 		}
 	}
-	if strings.Contains(h.Get("User-Agent"), "Private") || strings.Contains(h.Get("User-Agent"), "99.1") {
-		t.Errorf("terminal identity leaked in User-Agent: %q", h.Get("User-Agent"))
+	ua := h.Get("User-Agent")
+	if strings.Contains(ua, "Private") || strings.Contains(ua, "99.1") || strings.Contains(ua, "private-term") {
+		t.Errorf("terminal identity leaked in User-Agent: %q", ua)
 	}
 }
 

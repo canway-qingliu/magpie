@@ -26,6 +26,9 @@ import (
 // /codex/responses answers 404 "Model not found" for a model its own
 // /codex/models lists.
 
+// codexOriginator is the originator every request Codex CLI makes carries.
+const codexOriginator = "codex_cli_rs"
+
 // codexSign authenticates a request to the ChatGPT backend with the
 // tokens token hands out, and says it comes from Codex CLI.
 func codexSign(token func(context.Context) (tok, accountID string, err error)) func(context.Context, *http.Request, []byte) error {
@@ -60,9 +63,79 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 // sent with). The ChatGPT account's own calls that aren't a model's
 // (/wham/usage, the reset credits, the token refresh) went with Go's
 // User-Agent and no originator, unlike any request Codex makes.
+//
+// A request that came from a Codex client keeps that client's own name: its
+// User-Agent as it came, with the version in it never older than ver, and
+// its originator as it came. A request from anyone else is named as Codex
+// of version ver, which is what magpie can vouch for.
 func codexClientHeaders(h http.Header, ver string) {
-	h.Set("originator", "codex_cli_rs")
-	h.Set("User-Agent", codexUserAgent(ver))
+	if h.Get("originator") == "" {
+		h.Set("originator", codexOriginator)
+	}
+	h.Set("User-Agent", codexUserAgentFor(h.Get("User-Agent"), ver))
+}
+
+// CodexClientIdentity puts on h the identity of a Codex client, where the
+// request names none: its originator, its User-Agent and the version that
+// go with them.
+//
+// What a request already carries of it is left as it came: a Codex
+// client's own User-Agent is the original one, and the version it named is
+// its own.
+//
+// Every request to the backend is a request for a Codex model, whoever made
+// it: the backend serves Codex's clients, and gates its newest models on a
+// User-Agent that names one.
+func CodexClientIdentity(h http.Header) {
+	ver := codexVersion()
+	if h.Get("User-Agent") == "" {
+		h.Set("User-Agent", codexUserAgent(ver))
+	}
+	if h.Get("originator") == "" {
+		h.Set("originator", codexOriginator)
+	}
+	if h.Get("version") == "" {
+		h.Set("version", ver)
+	}
+}
+
+// codexUAVersionRE finds the version in a Codex client's User-Agent
+// ("codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0" — the first
+// one, which is the client's, not the system's).
+var codexUAVersionRE = regexp.MustCompile(`\d+\.\d+\.\d+(\.\d+)*`)
+
+// codexUserAgentFor is the User-Agent a request to the ChatGPT backend goes
+// with: the Codex client's own, when it named one, with the version in it
+// never older than ver, or Codex's own, naming Codex of version ver.
+//
+// The version is raised where it is older: the backend serves a model only
+// to a client new enough for it, and a request that says it is an older
+// Codex is refused the newest models ("The 'gpt-6.1-sol' model is not
+// supported when using Codex with a ChatGPT account").
+func codexUserAgentFor(ua, ver string) string {
+	if ua == "" || ver == "" || !codexOwnUA(ua) {
+		return codexUserAgent(ver)
+	}
+	v := codexUAVersionRE.FindString(ua)
+	if v == "" {
+		return ua
+	}
+	if compareClaudeVersion(v, ver) >= 0 {
+		return ua
+	}
+	return strings.Replace(ua, v, ver, 1)
+}
+
+// codexOwnUA says a User-Agent is a Codex client's own, and not an app's
+// that runs one: the names Codex answers to (its CLI, its desktop app, its
+// ACP adapter) and the one a hosted Codex answers to (VS Code's agent
+// host). An app that runs Codex under a name it uses for more than that is
+// not told apart this way.
+func codexOwnUA(ua string) bool {
+	ua = strings.ToLower(strings.TrimSpace(ua))
+	return strings.HasPrefix(ua, "codex") ||
+		strings.HasPrefix(ua, "acp-extension-codex") ||
+		strings.HasPrefix(ua, "vscode_agent_host")
 }
 
 // codexAccountHeaders are the headers of a call Codex makes about the

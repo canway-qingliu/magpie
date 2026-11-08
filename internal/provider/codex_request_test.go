@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/codexcat"
 )
@@ -63,6 +64,69 @@ func TestCodexSignSessionHeaders(t *testing.T) {
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"and the test?"}]}`)
 	if first == "" || first != next {
 		t.Fatalf("sessions %q and %q", first, next)
+	}
+}
+
+// A request that came from a Codex client keeps that client's own
+// User-Agent: nothing of it is changed but the version in it, which is
+// never older than the version the request is signed as (the backend
+// serves a model only to a client new enough for it). A request from
+// anyone else is named as Codex.
+func TestCodexSignKeepsTheClientsUserAgent(t *testing.T) {
+	signIn(t)
+	old := codexExecutable
+	codexExecutable = func() string { return "" }
+	codexSeen = seenVersion{}
+	codexVersionCache.at = time.Time{}
+	t.Cleanup(func() { codexExecutable = old; codexSeen = seenVersion{}; codexVersionCache.at = time.Time{} })
+	p, _ := find(All(), "codex")
+	for _, tt := range []struct {
+		name    string
+		ua      string
+		version string
+		want    string
+	}{
+		{
+			name: "a Codex CLI",
+			ua:   "codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+			want: "codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+		},
+		{
+			name: "a Codex desktop app",
+			ua:   "Codex Desktop/0.162.3 (Windows 10.0.26100; x86_64) unknown",
+			want: "Codex Desktop/0.162.3 (Windows 10.0.26100; x86_64) unknown",
+		},
+		{
+			name:    "an older Codex CLI",
+			ua:      "codex_cli_rs/0.150.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+			version: "0.170.0",
+			want:    "codex_cli_rs/0.170.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+		},
+		{
+			name: "another app",
+			ua:   "PrivateEditor/8.2",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+			req.Header.Set("User-Agent", tt.ua)
+			if tt.version != "" {
+				req.Header.Set("version", tt.version)
+			}
+			if err := p.Sign(context.Background(), req, Responses, []byte(`{}`)); err != nil {
+				t.Fatal(err)
+			}
+			got := req.Header.Get("User-Agent")
+			if tt.want == "" {
+				if !strings.HasPrefix(got, "codex_cli_rs/") {
+					t.Errorf("User-Agent = %q, want Codex's own", got)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Errorf("User-Agent = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
