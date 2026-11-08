@@ -100,10 +100,10 @@ func openPastedCallback(ctx context.Context, ports []string, raw string) (next s
 	if err != nil {
 		return "", 0, err
 	}
-	c := http.Client{
+	c := namedClient(&http.Client{
 		Transport:     &http.Transport{Proxy: nil},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	})
 	resp, err := c.Do(req)
 	if err != nil {
 		return "", 0, errors.New("the sign-in isn't waiting for that address any more; start it again")

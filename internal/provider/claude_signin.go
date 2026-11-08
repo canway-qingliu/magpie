@@ -406,7 +406,7 @@ func (s *signInFlow) claudePaste(raw string) error {
 		if err != nil {
 			return err
 		}
-		c := http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		c := namedClient(&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})
 		res, err := c.Do(req)
 		if err != nil {
 			return errors.New("Claude Code didn't take that address: " + err.Error())

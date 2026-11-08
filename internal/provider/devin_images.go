@@ -30,7 +30,7 @@ import (
 // devinUsageVersion is the CLI version Devin's API is asked as.
 const devinUsageVersion = "3000.11.3"
 
-var devinImagesClient = &http.Client{Timeout: 15 * time.Second}
+var devinImagesClient = namedClient(&http.Client{Timeout: 15 * time.Second})
 
 const devinModelConfigsRPC = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs"
 

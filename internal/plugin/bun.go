@@ -368,6 +368,9 @@ func getURLOnce(ctx context.Context, url string, limit int64, mirror bool) (b []
 	if err != nil {
 		return nil, err
 	}
+	// magpie's own name, as the plugin's other requests to GitHub carry:
+	// never Go's default, which says what magpie is written in
+	req.Header.Set("User-Agent", "magpie")
 	// Bun's newest release is asked of GitHub's API: with the user's
 	// GitHub token, as every request magpie makes to it is (#1942)
 	res, _, err := ghtoken.Do(req, githubAPI, func(r *http.Request) (*http.Response, error) {

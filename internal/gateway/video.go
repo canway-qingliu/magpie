@@ -1481,6 +1481,9 @@ func (s *Server) videosContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, provider.Chat, 502, err.Error())
 		return
 	}
+	// the vendor's own file, fetched as one a caller names is: with
+	// magpie's name, never Go's default
+	req.Header.Set("User-Agent", magpieUA())
 	// the URL is in the vendor's answer, so it is fetched as one a caller
 	// names is: public addresses, or the vendor's own host (vendorClient)
 	res, err := vendorClient(p).Do(req)

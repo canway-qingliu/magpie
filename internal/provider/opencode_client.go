@@ -89,11 +89,11 @@ var openCodeVersionRe = regexp.MustCompile(`^\d{1,4}\.\d{1,4}\.\d{1,6}$`)
 // read, isn't a release version or is older than OpenCodeVersion (a stale
 // mirror). Asked as the zen-free plugin asks it: 3s, no redirect.
 func openCodeAskVersion(u, current string) string {
-	c := &http.Client{
+	c := namedClient(&http.Client{
 		Timeout:       3 * time.Second,
 		Transport:     http.DefaultClient.Transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirected") },
-	}
+	})
 	res, err := c.Get(u + "?current=" + url.QueryEscape(current))
 	if err != nil {
 		return ""

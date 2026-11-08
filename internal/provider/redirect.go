@@ -70,6 +70,9 @@ func splitOrigin(scheme, host string) (string, string) {
 
 // Keyed is c with KeepsCredentials after c's own CheckRedirect, for a
 // request that carries a vendor's credential. c is left as it is.
+//
+// The request also goes with magpie's own name when it carries none (named):
+// Go's default User-Agent would say what magpie is written in.
 func Keyed(c *http.Client) *http.Client {
 	if c == nil {
 		c = http.DefaultClient
@@ -84,5 +87,6 @@ func Keyed(c *http.Client) *http.Client {
 		}
 		return KeepsCredentials(next, via)
 	}
+	k.Transport = named{k.Transport}
 	return &k
 }

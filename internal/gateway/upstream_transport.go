@@ -43,13 +43,16 @@ func vendorTLSConfig() *tls.Config {
 // but for a drawing, which an images API answers only once it has drawn:
 // it goes through a transport of its own that waits as long as Settings'
 // Image generation timeout gives it (drawWithin), up to 60 minutes.
+//
+// A request that names no client of its own goes with magpie's own name
+// (namedUA): Go's default would say what magpie is written in.
 func upstreamTransport() http.RoundTripper {
-	return drawsApart{
+	return namedUA{drawsApart{
 		any:     codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(upstreamHeaderWait)))}},
 		draws:   replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(0)))},
 		uploads: codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(uploadTransport(upstreamHeaderWait)))}},
 		slow:    new(atomic.Int64),
-	}
+	}}
 }
 
 // upstreamHeaderWait is how long a vendor is given to begin answering a

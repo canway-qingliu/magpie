@@ -392,6 +392,13 @@ agent's own User-Agent" unticked) sends magpie's in its place;
 and a vendor whose own client magpie goes as (OpenCode, Cline, Kilo) keep
 the User-Agent their sign-in sends, and don't take it.
 
+A request magpie makes for itself goes with magpie's own name: an
+account's balance, plan and usage, a sign-in, a model list, a revocation
+(`magpie` in the provider package), and the gateway's own requests to a
+vendor go with `magpie/<version>`. Never with Go's default,
+`Go-http-client/1.1`, which says what magpie is written in and is nothing
+a vendor needs to know.
+
 `magpie usage` (and `--csv`) takes `today`, `7d`, `30d` or `all`, each from a
 local midnight, or a window ending now: `--last 24h` (any Go duration, `90m`)
 or `--days 1.5`; the CSV then holds that window's calls only (#2075).

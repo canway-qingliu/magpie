@@ -162,7 +162,7 @@ func grokOpen(ctx context.Context, u string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := namedClient(http.DefaultClient).Do(req)
 	if err != nil {
 		return nil, err
 	}

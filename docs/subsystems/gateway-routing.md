@@ -17,6 +17,10 @@ served by a plugin are in [Provider and plugin ownership](provider-plugins.md).
 the shared vendor transport. The ChatGPT backend is selected for HTTP/1.1 by
 `provider/codex_http1.go`; that route alone gets the Codex TLS profile and has
 automatic gzip requests disabled. Other vendors use Go's default TLS profile.
+A request that names no client of its own goes with `magpie/<version>`
+(`namedUA`): Go's own default, `Go-http-client/1.1`, says what magpie is
+written in, and no vendor needs to know that. A request that names one — an
+agent's, a vendor's own client — keeps that name.
 On the Codex backend, `fromCodex` callers keep their Codex request identity.
 Other callers use `magpie/<version>` and have their application, terminal and
 Codex session headers removed before the request is sent. The stopped-gateway

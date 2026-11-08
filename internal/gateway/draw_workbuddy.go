@@ -88,11 +88,13 @@ var wbImages = struct {
 }{m: map[string]*wbImageList{}}
 
 // wbConfigClient asks a config the gateway isn't asking for a request:
-// through the account's proxy, as the gateway's own client does.
-var wbConfigClient = &http.Client{Timeout: 30 * time.Second, Transport: netproxy.Dispatch(&http.Transport{
+// through the account's proxy, as the gateway's own client does. A request
+// that names no client of its own goes with magpie's own name (namedUA):
+// Go's default would say what magpie is written in.
+var wbConfigClient = &http.Client{Timeout: 30 * time.Second, Transport: namedUA{netproxy.Dispatch(&http.Transport{
 	Proxy:             netproxy.Func,
 	ForceAttemptHTTP2: true,
-})}
+})}}
 
 func wbImagesKey(p provider.Provider) string { return p.ID + "\x00" + accountOf(p) }
 

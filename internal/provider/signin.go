@@ -444,7 +444,7 @@ func listenCodexCallback() (net.Listener, error) {
 			return ln, nil
 		}
 		if i == 0 {
-			c := http.Client{Timeout: 2 * time.Second}
+			c := namedClient(&http.Client{Timeout: 2 * time.Second})
 			if resp, err := c.Get("http://" + codexCallbackAddr + "/cancel"); err == nil {
 				resp.Body.Close()
 			}

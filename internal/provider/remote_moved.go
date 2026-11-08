@@ -275,7 +275,7 @@ func proofAt(at string) string {
 var proveClient = func() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	return &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return namedClient(&http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})
 }()
 
 // proves says the magpie at at holds key: it answered a nonce of ours with

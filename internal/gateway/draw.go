@@ -1870,6 +1870,9 @@ func FetchImage(ctx context.Context, c *http.Client, url string) ([]byte, string
 	if err != nil {
 		return nil, "", err
 	}
+	// the vendor's own file, fetched as one a caller names is: with
+	// magpie's name, never Go's default
+	req.Header.Set("User-Agent", magpieUA())
 	res, err := c.Do(req)
 	if err != nil {
 		return nil, "", why(err)
