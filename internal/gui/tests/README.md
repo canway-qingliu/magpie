@@ -68,7 +68,9 @@ Chromium and WebKit and every language: a wrong key is told so in the
 page's language and shows nothing; the right one shows its limit, its
 usage and most used model, picks that model, and gives Claude Code, Codex,
 OpenAI-compatible and curl setup at the address the page was opened at,
-with a placeholder until "Put my key in the setup" is ticked. A reload
+with a placeholder until "Put my key in the setup" is ticked. Claude
+Code's setup names the pick as ANTHROPIC_MODEL alone and each tier's
+model as the gateway's `tiers` says, leaving out a tier with none. A reload
 keeps the key in the tab, Forget takes it away, and no request carries the
 key in its address. A read-only key gets no setup. Gateway → Gateway keys
 shows the page's address (the LAN one, or `MAGPIE_PUBLIC_URL`) with a
@@ -848,6 +850,15 @@ Tools tab of the contents lists only tools; nothing scrolls sideways — in
 Chromium and WebKit, in English, Chinese, Japanese and German, at 1100px and
 420px. With the state answering after the history, the cards drawn by the
 agents' ids take their names once it is in, though the history is the same.
+
+`sessions-context-line.test.cjs` opens a session's details on the Sessions
+page (liang_yongxiang on Discord): one the gateway sent calls of asks
+`/api/context/session` once, with its first and last, and draws a Context
+line, a point a request telling its share of the window and the fullest
+share beside it, toned; a point clicked opens that request in Routing with
+its card; one the gateway kept no prompt of, or never saw, has no line, and
+the second isn't asked; opened again it is drawn without asking — in
+Chromium and WebKit, in all five languages, at 1100px and 420px.
 
 `tray-usages.test.cjs` picks several of the Usage page's cards for the menu
 bar in Settings: the menu keeps open as Codex and Claude Code are ticked
@@ -2498,10 +2509,10 @@ node --test internal/gui/tests/cli-path.test.cjs
 ```
 
 `update-mirror.test.cjs` checks Settings › About › Download source (#893):
-the row says updates come from GitHub; Use a mirror… opens an address field,
+the row says updates come from usemagpie.ai, then GitHub; Use a mirror… opens an address field,
 an http:// address is refused with the reason in red and the draft kept, an
 https:// one saved with Enter posts `/api/settings/update-mirror` and is
-shown, and Use GitHub posts an empty mirror. A download that failed through
+shown, and Remove mirror posts an empty mirror. A download that failed through
 the mirror says so on the Version row and offers Download from GitHub, which
 posts the empty mirror then `/api/update/install`. No native select, no left
 border, no click scrolls. English and Chinese, Chromium and WebKit; the API

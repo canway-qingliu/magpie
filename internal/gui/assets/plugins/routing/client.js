@@ -661,6 +661,17 @@ function routingPage(part) {
   // sillytavern; a comma would part it in two (ParseRule)
   const uaName = (s) => String(s || "").trim().split(/[\/\s,]/)[0].toLowerCase();
   const agentName = (id) => agentOf(id)?.name || (id && id !== "other" ? id : t("your agent"));
+  // callerName is who sent a request, as the stage and the lists name it:
+  // the gateway key it came with, by the key's name now, else the name it
+  // had then; a request with no named key, its agent (acezan on Discord:
+  // a script's key read "Python-urllib"). srcOf is the stage's node for
+  // it: each key's its own, two keys' scripts saying one User-Agent too.
+  // Never the key's secret: a route carries its id and name alone.
+  function callerName(r) {
+    const k = r.callerKey && (callerKeys.find((x) => x.id === r.callerKey)?.name || r.callerKeyName);
+    return k || agentName(r.agent);
+  }
+  const srcOf = (r) => r.callerKey ? r.agent + "\u0001" + r.callerKey : r.agent;
   // userShown is an account of provider as the user named it in magpie
   // (provider.AccountNames, #1515), else as its plugin's usage names it
   // (accountUsers, #4416), else as its vendor names it. The name
@@ -1122,7 +1133,9 @@ function routingPage(part) {
       case "reserve": return t("{who} answered this conversation last, but it is in reserve while those before it in the list can take requests, so the conversation moves back to them.", { who: last });
       case "credits": return t("{who} answered this conversation last, but it is on its credits now, set to spend them only after everything else, so the conversation moves to {first}.", { who: last, first: who(r.order[0]) });
       case "gone": return t("{who} answered this conversation last, but it is no longer one to route to.", { who: last });
-      case "order": return t("{who} answered this conversation last, but the group goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.", { who: last, first: who(r.order[0]), n: a.turn });
+      case "order": return r.group
+        ? t("{who} answered this conversation last, but the group goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.", { who: last, first: who(r.order[0]), n: a.turn })
+        : t("{who} answered this conversation last, but the provider goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.", { who: last, first: who(r.order[0]), n: a.turn });
       case "main": return t("{who}, a fallback, answered this conversation last, but the provider's own {first} is ready again, so turn {n} goes back to it.", { who: last, first: who(r.order[0]), n: a.turn });
       case "back": return t("{who} took this conversation while {first}, listed ahead of it in the group, couldn't; {first} is ready again, so turn {n} goes back to it.", { who: last, first: who(r.order[0]), n: a.turn });
       case "no-cache": return t("{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.", { who: last, r: tokens(a.cacheRead || 0), w: tokens(a.cacheWrite || 0) });
@@ -1852,8 +1865,8 @@ function routingPage(part) {
     const s = way(0, 1), e = way(pts.length - 1, -1);
     return s && e ? [s, e] : null;
   }
-  // via is the way through magpie from one wire to the next: a gentle arc
-  // across it, carrying on the way the flight came in and leaving the way
+  // via is the way through magpie from one wire to the next: an arc along
+  // its edge, carrying on the way the flight came in and leaving the way
   // the next wire goes — or, out the side it came in, a loop round inside.
   // It follows the wires as they move.
   function via(from, to) {
@@ -1876,9 +1889,31 @@ function routingPage(part) {
         c1 = [a.x + a.tx * k - nx * m, a.y + a.ty * k - ny * m];
         c2 = [b.x - b.tx * k + nx * m, b.y - b.ty * k + ny * m];
       } else {
-        const k = dist * .38, l = Math.min(16, dist * .12), nx = dy / dist, ny = -dx / dist;
-        c1 = [a.x + a.tx * k + nx * l, a.y + a.ty * k + ny * l];
-        c2 = [b.x - b.tx * k + nx * l, b.y - b.ty * k + ny * l];
+        // the sky is over the cards (the owner, 11-09): a magpie crossing
+        // magpie's box keeps to its edge, off its name and address. Side
+        // to side it goes along the top edge; round a corner, by it.
+        // the box layout read with the wires, not read again: a read here
+        // laid the stage out again mid-flight
+        const h = hubBox || { l: 0, t: 0, r: 0, b: 0 }, L = h.l, T = h.t, R = h.r, B = h.b, wide = R > L;
+        const side = (p) => { const e = [Math.abs(p.x - L), Math.abs(p.y - T), Math.abs(p.x - R), Math.abs(p.y - B)]; return e.indexOf(Math.min(...e)); }; // left, top, right, bottom
+        const sa = side(a), sb = side(b);
+        if (wide && sa % 2 === 0 && sb % 2 === 0 && sa !== sb) {
+          // up the side it came in, over the top a little above the edge
+          // ((a.y + 3cy + 3cy + b.y) / 8 = T - 8) and down the side it
+          // leaves by: the magpie trails its dot, and anywhere lower its
+          // tail swept the name
+          const cy = (8 * (T - 8) - a.y - b.y) / 6;
+          c1 = [a.x, cy];
+          c2 = [b.x, cy];
+        } else if (wide && sa % 2 !== sb % 2) {
+          const x = sa % 2 === 0 ? a.x : b.x, y = sa % 2 === 1 ? a.y : b.y;
+          c1 = [x, y];
+          c2 = [x, y];
+        } else {
+          const k = dist * .38, l = Math.min(16, dist * .12), nx = dy / dist, ny = -dx / dist;
+          c1 = [a.x + a.tx * k + nx * l, a.y + a.ty * k + ny * l];
+          c2 = [b.x - b.tx * k + nx * l, b.y - b.ty * k + ny * l];
+        }
       }
       // set only when it moved: a new d is measured again (measure)
       const d = `M${a.x} ${a.y} C${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${b.x} ${b.y}`;
@@ -1941,20 +1976,30 @@ function routingPage(part) {
   // and each flowing wire spans the stage. With five requests in flight
   // the Routing page took a quarter of a core and more in WebView2
   // (chenxiang, #5467). The timer runs only while a wire flows or a dot
-  // is held, in sight and with motion on.
+  // is held and in sight. With motion reduced (the system's or Settings')
+  // nothing moves, but what is in flight still shows: the flowing wires
+  // fade to .45 and back each 1.2s instead (--rt-fade on flows), and the
+  // held dot fades as it does with motion on. Standing still, a request
+  // in flight read as one over, and the Windows app's Routing page as
+  // having lost its animation (vantiboolean).
   const SLOW_EVERY = 1000 / 15;
   let slowTimer = 0;
-  const slowNeeded = () => (flowing.size > 0 || holds.size > 0) && shown() && !still();
+  const slowNeeded = () => (flowing.size > 0 || holds.size > 0) && shown();
   function slowTick() {
     if (!slowNeeded()) {
       // stopped where it was, a dot held on would stay faded and still
       clearInterval(slowTimer); slowTimer = 0;
-      flows.style.removeProperty("--rt-dash"); sky.style.removeProperty("--rt-held");
+      for (const k of ["--rt-dash", "--rt-fade"]) flows.style.removeProperty(k);
+      sky.style.removeProperty("--rt-held");
       return;
     }
-    const now_ = performance.now();
-    if (flowing.size) flows.style.setProperty("--rt-dash", (-(now_ % 700) / 700 * 8).toFixed(2) + "px");
-    if (holds.size) sky.style.setProperty("--rt-held", (1 - .55 * (1 - Math.cos(2 * Math.PI * (now_ % 1200) / 1200)) / 2).toFixed(3));
+    const now_ = performance.now(), fade = (1 - .55 * (1 - Math.cos(2 * Math.PI * (now_ % 1200) / 1200)) / 2).toFixed(3);
+    if (flowing.size) {
+      const calm_ = still();
+      flows.style.setProperty(calm_ ? "--rt-fade" : "--rt-dash", calm_ ? fade : (-(now_ % 700) / 700 * 8).toFixed(2) + "px");
+      flows.style.removeProperty(calm_ ? "--rt-dash" : "--rt-fade");
+    }
+    if (holds.size) sky.style.setProperty("--rt-held", fade);
   }
   function slowMove() {
     if (slowTimer || !slowNeeded()) return;
@@ -2102,6 +2147,8 @@ function routingPage(part) {
     layout();
   }); };
 
+  // hubBox is magpie's box as layout last read it, on the stage, for via
+  let hubBox = null;
   function layout() {
     const r = stage.getBoundingClientRect();
     if (!r.width) return;
@@ -2120,7 +2167,7 @@ function routingPage(part) {
       boxes.set(e, v);
       return v;
     };
-    const h = b(hub), low = b(srcs).b;
+    const h = hubBox = b(hub), low = b(srcs).b;
     // a key off screen is not drawn, and its content is as tall as a drawn
     // key's (routing.css, #3164)
     let row = list.firstElementChild;
@@ -2294,7 +2341,7 @@ function routingPage(part) {
     const out = new Map();
     for (const r of rs) {
       const key = wayOf(r), g = r.group, f = r.order.find((x) => !x.fallback) || r.order[0];
-      const agents = [...new Set([...(out.get(key)?.agents || []), agentName(r.agent)])];
+      const agents = [...new Set([...(out.get(key)?.agents || []), callerName(r)])];
       out.set(key, g ? { id: key, route: true, pk: "route/group/" + g.id, name: g.name, ref: g.ref || "group/" + g.id, routing: g.routing || "", agents }
         : { id: key, route: true, pk: "route/" + r.provider, name: f?.name || r.provider, ref: r.model, routing: f?.routing || "", icon: f ? f.icon || f.preset || "generic" : "",
           lone: r.order.filter((x) => !x.fallback).length <= 1, agents });
@@ -2309,12 +2356,12 @@ function routingPage(part) {
     if (day && !rp) return [];
     const n = now(), last = new Map(), map = src();
     const rs = [...map.values()].filter(matchesPurpose).sort((a, b) => a.id - b.id);
-    for (const r of rs) last.set(r.agent, r);
-    const out = rs.filter((r) => playing.has(r.id) || (last.get(r.agent) === r && (!r.done || at(r.time) + (r.ms || 0) > n - LINGER)));
+    for (const r of rs) last.set(srcOf(r), r);
+    const out = rs.filter((r) => playing.has(r.id) || (last.get(srcOf(r)) === r && (!r.done || at(r.time) + (r.ms || 0) > n - LINGER)));
     const c = cur && map.get(cur.id);
     if (c && !out.includes(c)) out.push(c);
-    const ags = [...new Set(out.map((r) => r.agent))].slice(-4);
-    return out.filter((r) => ags.includes(r.agent)).sort((a, b) => a.id - b.id);
+    const ags = [...new Set(out.map(srcOf))].slice(-4);
+    return out.filter((r) => ags.includes(srcOf(r))).sort((a, b) => a.id - b.id);
   }
 
   // hueOf is the colour an agent's requests and answers fly in, and it is
@@ -2555,7 +2602,7 @@ function routingPage(part) {
       srcs.replaceChildren();
     }
     // agents
-    const ags = [...new Set(rs.map((r) => r.agent))];
+    const ags = [...new Set(rs.map(srcOf))];
     for (const [id, a] of agents) if (!ags.includes(id)) { a.node.remove(); a.wire.remove(); agents.delete(id); }
     const keep = [...agents.keys()];
     const nodes = [...keep, ...ags.filter((a) => !keep.includes(a))].map((id) => agentNode(id).node);
@@ -2563,18 +2610,18 @@ function routingPage(part) {
     srcs.classList.toggle("many", ags.length > 1);
     hues(ags);
     for (const id of ags) {
-      const a = agents.get(id), r = rs.filter((x) => x.agent === id).pop(), ag = agentOf(id);
+      const a = agents.get(id), r = rs.filter((x) => srcOf(x) === id).pop(), ag = agentOf(r.agent);
       for (const n of [a.node, a.wire]) n.style.setProperty("--agent", hueOf(id));
       if (a.icon !== (ag?.icon || "generic")) { a.icon = ag?.icon || "generic"; a.ic.replaceChildren(icon(a.icon)); }
-      setText(a.name, agentName(id));
+      setText(a.name, callerName(r));
       // one agent working in more than one folder at once: which, by
       // their last level (#1068). The stage holds an agent's latest
       // request alone, so its others still going, or just done, count too.
-      const n = now(), going = pinned ? [] : [...src().values()].filter((x) => x.agent === id && (!x.done || at(x.time) + (x.ms || 0) > n - LINGER));
-      const fs = foldersOf([...new Set([...going, ...rs.filter((x) => x.agent === id)])].sort((x, y) => x.id - y.id));
+      const n = now(), going = pinned ? [] : [...src().values()].filter((x) => srcOf(x) === id && (!x.done || at(x.time) + (x.ms || 0) > n - LINGER));
+      const fs = foldersOf([...new Set([...going, ...rs.filter((x) => srcOf(x) === id)])].sort((x, y) => x.id - y.id));
       // told again every second (countdown): only what changed is written
       setText(a.sub, fs.length > 1 ? fs.map(lastLevel).join(", ") : r.model);
-      const tip = [agentName(id), r.model, ...fs.map((f) => t("Folder") + ": " + f)].join("\n");
+      const tip = [...new Set([callerName(r), agentName(r.agent)]), r.model, ...fs.map((f) => t("Folder") + ": " + f)].join("\n");
       if (a.node.title !== tip) a.node.title = tip;
     }
     // the account sets, the latest of each
@@ -2841,7 +2888,7 @@ function routingPage(part) {
     hubText();
     const n = now(), rs = staged();
     const trying = new Map(), busy = new Set(); // a seat → the request it answers now
-    for (const r of rs) for (const tr of r.tries) if (!tr.done) { trying.set(tryseat(r, tr), r); busy.add(r.agent); }
+    for (const r of rs) for (const tr of r.tries) if (!tr.done) { trying.set(tryseat(r, tr), r); busy.add(srcOf(r)); }
     askUnnamed(rs);
     const onWire = new Map(); // a seat → the agent whose magpie is at it
     for (const f of flying.values()) { onWire.set(f.id, f.agent); busy.add(f.agent); }
@@ -2977,7 +3024,7 @@ function routingPage(part) {
       // answers now, the one whose magpie is at it, else the request it
       // answered, and none once it is off, so a row kept from before
       // never shows the last agent's colour (Pkh on Discord)
-      const by = trying.get(id)?.agent ?? onWire.get(id) ?? r.agent;
+      const by = trying.has(id) ? srcOf(trying.get(id)) : onWire.get(id) ?? srcOf(r);
       if (on) row.wire.style.setProperty("--agent", hueOf(by)); else row.wire.style.removeProperty("--agent");
       row.wire.classList.toggle("rest", !!resting || !!w.unlisted || !!w.window);
     }
@@ -4489,7 +4536,7 @@ function routingPage(part) {
     const when = el("span", "at", rowClock(r.time));
     const asked = el("span", "asked");
     const sw = el("i", "ag");
-    sw.style.setProperty("--agent", hueOf(r.agent));
+    sw.style.setProperty("--agent", hueOf(srcOf(r)));
     asked.append(sw, icon(ag?.icon || "generic"), el("span", "m", r.model));
     const tags = rowTags(r);
     if (tags.length) { asked.classList.add("kinded"); asked.append(...tags); }
@@ -5094,7 +5141,7 @@ function routingPage(part) {
       if (aside) say(aside, true);
     }
     renderAll();
-    const A = agents.get(r.agent);
+    const A = agents.get(srcOf(r));
     // an agent past the stage's four (staged) isn't drawn: its request is
     // listed, not flown
     if (!A) {
@@ -5102,7 +5149,7 @@ function routingPage(part) {
       return;
     }
     const dot = packet();
-    dot.style.setProperty("--agent", hueOf(r.agent));
+    dot.style.setProperty("--agent", hueOf(srcOf(r)));
     // from: where in magpie the dot is, once it is — the way it came in
     let carrier = bird("req"), from = null, back = null;
     // rt: the route as the gateway has it now — or, dropped from what it
@@ -5125,7 +5172,7 @@ function routingPage(part) {
         }
         const row = shownRow(tryseat(r, r.tries[i])); // a folded key's fold
         if (!row) { i++; continue; }
-        flying.set(dot, { id: tryseat(r, r.tries[i]), agent: r.agent });
+        flying.set(dot, { id: tryseat(r, r.tries[i]), agent: srcOf(r) });
         if (!carrier) carrier = bird("req");
         if (from) tick(hub);
         const ws = wiresTo(row);
@@ -5247,8 +5294,8 @@ function routingPage(part) {
     rTrack.replaceChildren(rHead, ...plan.map((g) => {
       const m = el("i", "rp-mark");
       m.style.left = (g.s / (v || 1)) * 100 + "%";
-      m.style.setProperty("--agent", hueOf(g.r.agent));
-      m.title = `${clock(g.r.time)} · ${agentName(g.r.agent)} · ${g.r.model}`;
+      m.style.setProperty("--agent", hueOf(srcOf(g.r)));
+      m.title = `${clock(g.r.time)} · ${callerName(g.r)} · ${g.r.model}`;
       g.mark = m;
       return m;
     }));
@@ -5327,10 +5374,10 @@ function routingPage(part) {
     rWhat.replaceChildren(...(shown_.length ? shown_.map((g) => {
       const r = p.routes.get(g.r.id) || g.r, row = el("div", "rp-req" + (on.includes(g) ? " on" : ""));
       const sw = el("i", "ag");
-      sw.style.setProperty("--agent", hueOf(r.agent));
+      sw.style.setProperty("--agent", hueOf(srcOf(r)));
       const [said] = outcome(r);
       row.append(el("span", "rp-n", t("request {i} of {n}", { i: g.n, n: p.plan.length })), sw,
-        el("b", "", agentName(r.agent)), el("code", "mdl", r.model), ...rowTags(r), el("span", "rp-to", "→ " + said),
+        el("b", "", callerName(r)), el("code", "mdl", r.model), ...rowTags(r), el("span", "rp-to", "→ " + said),
         el("span", "rp-at", t("sent {time}", { time: new Date(r.time).toLocaleTimeString(intlLang(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) })));
       row.onclick = () => { cur = r; renderLog(); };
       return row;
@@ -7468,20 +7515,32 @@ function routingPage(part) {
     drawPats();
     const pw = el("div");
     pw.append(pbox, el("div", "hint", t("Every model a pattern matches is in the group, now and as providers list new ones, after the models above: * is any run of characters in provider/model, re: starts a regular expression.")));
-    ed.append(el("label", "", t("Patterns")), pw);
+    // what few change — patterns, the lists, routing, the waits, the
+    // window, how long a conversation stays, reasoning — folded under
+    // Advanced below the rules, as a provider's editor folds its own (the
+    // owner: the form was too much at once). Open when one of them is set,
+    // or as it was left while this group is being edited
+    const adv = edAligned(el("details", "more advanced rt-gadv"));
+    adv.open = gEdit.adv ?? !!(d.match.length || d.unlists || d.routing || d.sink === "sink" || d.sink === "" || d.firstToken || d.patience || d.context || d.affinity || d.effort || d.levels?.length);
+    const advOf = gEdit;
+    adv.onfold = (open) => { advOf.adv = open; };
+    adv.append(el("summary", "", t("Advanced")));
+    const advIn = el("div", "inner");
+    adv.append(advIn);
+    advIn.append(el("label", "", t("Patterns")), pw);
     // its models in the lists agents see too, or the group alone (#1783)
     const listHint = el("div", "hint", t(LIST_HINT[d.unlists ? "unlists" : ""])), listW = el("div");
     const listPick = segs(LIST_OPTS.map(([id, n]) => [id, t(n)]), d.unlists ? "unlists" : "", (v) => { d.unlists = v === "unlists"; listHint.textContent = t(LIST_HINT[v]); });
     listPick.classList.add("list-pick");
     listW.append(listPick, listHint);
-    ed.append(el("label", "", t("Model lists")), listW);
+    advIn.append(el("label", "", t("Model lists")), listW);
 
     const gHint = (v) => GROUP_HINT[v] ? t(GROUP_HINT[v]) : MODES[v] || !v ? t(GROUP_HINT[""]) : modeOf(v)[1];
     const rHint = el("div", "hint", gHint(d.routing));
     const rw = el("div");
     rw.append(routingSegs(withJS(GROUP_ROUTE_OPTS, d.routing).map(([id, n, js]) => [id, t(n), , js]), d.routing, (v) => { d.routing = v; rHint.textContent = gHint(v); draw(); drawRules(); drawSink(); }), rHint);
     rw.append(el("div", "hint", t(GROUP_NEST)));
-    ed.append(el("label", "", t("Routing")), rw);
+    advIn.append(el("label", "", t("Routing")), rw);
     // one rate limited with quota left: its place, or the back
     const kHint = el("div", "hint"), kw = el("div", "sink-wrap"), kLab = el("label", "", t("Rate limited"));
     // Default follows the setting for every group, under the list
@@ -7494,7 +7553,7 @@ function routingPage(part) {
     const kPick = segs(G_SINK_OPTS.map(([id, n]) => [id, t(n)]), d.sink ?? "def", (v) => { d.sink = v; drawSink(); });
     kPick.classList.add("sink-pick");
     kw.append(kPick, kHint);
-    ed.append(kLab, kw);
+    advIn.append(kLab, kw);
     drawSink();
     // a member slow to begin its answer: waited for, or the next asked
     // or after as many minutes as the user types (Kismet Alan on Discord)
@@ -7537,7 +7596,7 @@ function routingPage(part) {
       if (n > 0) d.firstToken = n;
       drawFirst();
     };
-    ed.append(el("label", "", t("Slow to start")), fw);
+    advIn.append(el("label", "", t("Slow to start")), fw);
     drawFirst();
     // every member busy at once: the agent told, or the members asked
     // again within a budget (#1418)
@@ -7549,7 +7608,7 @@ function routingPage(part) {
       : t("When every member has failed with an error that may pass — overloaded, unavailable, rate limited for a moment — and nothing of the reply has reached the agent, each is asked again after a pause, longer each time and never shorter than the vendor asks, for up to {n} more. A streaming agent is kept waiting meanwhile.", { n: patienceWord(pat) }));
     };
     patW.append(segs(G_PATIENCE_OPTS.map(([n, l]) => [n, t(l)]), d.patience || 0, (v) => { d.patience = +v; drawPatience(); }), patHint);
-    ed.append(el("label", "", t("Every member busy")), patW);
+    advIn.append(el("label", "", t("Every member busy")), patW);
     drawPatience();
     // the window agents are told: the largest member's, the smallest's, or
     // one the user names (Mikan on Discord)
@@ -7594,12 +7653,12 @@ function routingPage(part) {
       if (n > 0) d.context = n;
       drawCtx();
     };
-    ed.append(el("label", "", t("Context")), ctxW);
+    advIn.append(el("label", "", t("Context")), ctxW);
     drawCtx();
     const aHint = el("div", "hint", t(AFF_HINT[d.affinity] || AFF_HINT[""]));
     const aw = el("div");
     aw.append(segs(AFF_OPTS.map(([id, n]) => [id, t(n)]), d.affinity, (v) => { d.affinity = v; aHint.textContent = t(AFF_HINT[v] || AFF_HINT[""]); }), aHint);
-    ed.append(el("label", "", t("Stays")), aw);
+    advIn.append(el("label", "", t("Stays")), aw);
 
     // rules: which member a turn goes to first, by what the request shows.
     // A rule reads as one line, a sentence: the conditions it has, then →
@@ -8224,7 +8283,7 @@ function routingPage(part) {
       drawEffort(); drawClassifier();
     }), eHint);
     drawEffort();
-    ed.append(el("label", "", t("Effort")), ew);
+    advIn.append(el("label", "", t("Effort")), ew);
     ed.append(clabel, cw);
     drawRules();
     // the levels agents are offered: those every model has, or ones the
@@ -8260,7 +8319,8 @@ function routingPage(part) {
       drawLevels();
     }), chips, lHint);
     drawLevels();
-    ed.append(el("label", "", t("Levels")), lw);
+    advIn.append(el("label", "", t("Levels")), lw);
+    ed.append(adv);
 
     const bar = el("div", "bar view-foot");
     if (g) {
@@ -8273,7 +8333,7 @@ function routingPage(part) {
     cancel.onclick = cancelGroup;
     const saveBtn = el("button", "text primary", t(g ? "Save" : "Add"));
     const save = () => {
-      if (addPattern() === null) return pin.focus({ preventScroll: true }); // typed, not added: it is meant
+      if (addPattern() === null) return adv.open = true, pin.focus({ preventScroll: true }); // typed, not added: it is meant
       if (!d.members.length && !d.match.length) { addBtn.focus({ preventScroll: true }); return status(t("A group needs a model in it"), "warn"); }
       d.rules.forEach((r) => { r.intent = (r.intent || "").trim(); });
       // hours: both times, or none and no days; days alone are all day
@@ -8493,12 +8553,14 @@ function routingPage(part) {
     const recent = [...routes.values()].sort((a, b) => b.id - a.id);
     const flying = recent.filter((r) => pPlays.has(r.id));
     const ags = [], dst = new Map(); // seat key → { name, sub, how }
+    const byOf = new Map(); // a caller (srcOf) → its latest request
+    for (const r of recent) if (!byOf.has(srcOf(r))) byOf.set(srcOf(r), r);
     for (const r of flying) {
-      if (!ags.includes(r.agent)) ags.push(r.agent);
+      if (!ags.includes(srcOf(r))) ags.push(srcOf(r));
       for (const tr of r.tries) { const s = pSeat(r, tr); if (!dst.has(s.key)) dst.set(s.key, s); }
     }
     for (const r of recent) {
-      if (ags.length < P_SIDE && !ags.includes(r.agent)) ags.push(r.agent);
+      if (ags.length < P_SIDE && !ags.includes(srcOf(r))) ags.push(srcOf(r));
       const tr = r.tries[r.tries.length - 1];
       if (tr) { const s = pSeat(r, tr); if (!dst.has(s.key) && dst.size < P_SIDE) dst.set(s.key, s); }
     }
@@ -8517,12 +8579,12 @@ function routingPage(part) {
     pFrom.replaceChildren(...pAg.map((id) => {
       const n = pNode("a:" + id);
       keep.add("a:" + id);
-      const ag = agentOf(id);
+      const r = byOf.get(id), ag = agentOf(r.agent);
       n.node.className = "ps-node ps-ag";
       n.node.style.setProperty("--agent", hueOf(id));
       n.wire.style.setProperty("--agent", hueOf(id));
-      n.node.replaceChildren(icon(ag?.icon || "generic"), el("span", "ps-name", agentName(id)));
-      n.node.title = [agentName(id), ...foldersOf(recent.filter((r) => r.agent === id).slice(0, 20).reverse()).map((f) => t("Folder") + ": " + f)].join("\n");
+      n.node.replaceChildren(icon(ag?.icon || "generic"), el("span", "ps-name", callerName(r)));
+      n.node.title = [...new Set([callerName(r), agentName(r.agent)]), ...foldersOf(recent.filter((x) => srcOf(x) === id).slice(0, 20).reverse()).map((f) => t("Folder") + ": " + f)].join("\n");
       return n.node;
     }));
     pTo.replaceChildren(...pDst.map((k) => {
@@ -8613,9 +8675,9 @@ function routingPage(part) {
     dot.setAttribute("r", 3.5);
     dot.setAttribute("class", "ps-dot");
     dot.setAttribute("visibility", "hidden");
-    dot.style.setProperty("--agent", hueOf(r.agent));
+    dot.style.setProperty("--agent", hueOf(srcOf(r)));
     pSky.appendChild(dot);
-    const home = () => pNodes.get("a:" + r.agent);
+    const home = () => pNodes.get("a:" + srcOf(r));
     // rt: the route as the gateway has it now — or, dropped from the 60
     // kept while it flew, over: its dot goes, as nothing more will be heard
     // of it. Waiting on it held the dot and its place for three minutes
@@ -8784,7 +8846,7 @@ function routingPage(part) {
     b.type = "button";
     const ag = agentOf(r.agent);
     const asked = el("span", "pr-a");
-    asked.append(icon(ag?.icon || "generic"), el("span", "pr-who", agentName(r.agent)), el("code", "m", r.model));
+    asked.append(icon(ag?.icon || "generic"), el("span", "pr-who", callerName(r)), el("code", "m", r.model));
     asked.append(...rowTags(r));
     const when = el("span", "at", new Date(r.time).toLocaleTimeString(intlLang(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }));
     // where it went: the provider, the account or key, and the model that
