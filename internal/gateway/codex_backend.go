@@ -977,7 +977,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	usage.Saw(agentOf(r))
 	// Codex's own turns come here from the mux, not through serve: the
 	// row written below sums this call's tries in its own context (#4456)
-	r = r.WithContext(context.WithValue(r.Context(), upBytesKey{}, &upBytes{}))
+	r = r.WithContext(s.countBytes(r.Context()))
 	w0, body0 := w, body // as they came, for the fallbacks (codexFallBack)
 	// Claude's blocks magpie gave Codex (claudeseal) are Claude's alone:
 	// to OpenAI each item is its summary, as before magpie carried them
@@ -985,6 +985,16 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	base := provider.CodexBase
 	if apiKey(r.Header) && rest != "/models" {
 		base = codexAPIBase
+	}
+	// the account ChatGPT limited till a time it named is not asked again
+	// before it: Codex's retries are answered here (codexHolds)
+	holdKey := ""
+	if r.Method == http.MethodPost && (rest == "/responses" || rest == "/responses/compact") {
+		holdKey = codexHoldKey(base, on)
+		if h, ok := codexHeld(holdKey, start); ok {
+			s.writeCodexHeld(w, r, h, base, on, modelOf(body), start)
+			return
+		}
 	}
 	var maskedHits maskHits
 	// the ChatGPT sign-in the user set to go unmasked, and its fallbacks
@@ -1416,6 +1426,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		if (rest == "/responses" || rest == "/responses/compact") && res.StatusCode >= 400 {
 			msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 			res.Body = io.NopCloser(bytes.NewReader(msg))
+			// its credits and resets looked at above, a 429 that names
+			// when the account is back holds it till then (codexHolds)
+			noteCodexHold(holdKey, res.StatusCode, res.Header, msg)
 			if overload && codexBusy(res.StatusCode, msg) && s.codexFallsBack(modelOf(body), body) {
 				// still too busy once asked again: the fallbacks answer
 				said := provider.APIError(msg, res.Status)
@@ -1623,7 +1636,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		RequestID: requestID(res.Header), ResponseID: uu.ResponseID, Endpoint: r.URL.Path}
 	failedWith(&rec, call.Status, call.Error, errType)
 	if up := upBytesOf(r.Context()); up != nil {
-		rec.UpBytes, rec.PlainBytes = up.wire, up.plain
+		rec.UpBytes, rec.PlainBytes, rec.Socket = up.wire, up.plain, up.socket
 		rec.DownBytes = up.downOf()
 	}
 	appendUsage(r, rec)
@@ -3157,7 +3170,7 @@ func itemIDsRefused(model string) string { return "item ids\x00" + model }
 // Azure OpenAI's, the ChatGPT backend behind a Codex sign-in, and Copilot's
 // /responses in front of them.
 func validatesItemIDs(p provider.Provider) bool {
-	return strings.HasSuffix(p.Host(), "openai.com") || p.IsAzure() ||
+	return strings.HasSuffix(p.VendorHost(), "openai.com") || p.IsAzure() ||
 		p.Account != nil && (p.Account.Agent == "codex" || p.Account.Agent == "copilot")
 }
 
@@ -3399,7 +3412,7 @@ var keepsSeal = map[string]bool{`"reasoning"`: true, `"compaction"`: true, `"com
 // ChatGPT backend get it as it came; so does anything else, byte for byte,
 // when none of them is in it.
 func forVendor(p provider.Provider, body []byte, compaction bool) []byte {
-	if p.Account != nil && p.Account.Agent == "codex" || strings.HasSuffix(p.Host(), "openai.com") {
+	if p.Account != nil && p.Account.Agent == "codex" || strings.HasSuffix(p.VendorHost(), "openai.com") {
 		return body
 	}
 	if compaction {
@@ -3497,7 +3510,7 @@ func forVendor(p provider.Provider, body []byte, compaction bool) []byte {
 // to read in it.
 func keepsAccessPrograms(p provider.Provider, in http.Header) bool {
 	return p.Account != nil && p.Account.Agent == "codex" ||
-		strings.HasSuffix(p.Host(), "openai.com") ||
+		strings.HasSuffix(p.VendorHost(), "openai.com") ||
 		p.IsRemoteMagpie() ||
 		p.CodexAsSent && p.Account == nil && fromCodex(in)
 }

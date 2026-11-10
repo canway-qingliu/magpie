@@ -74,7 +74,11 @@ export const FakePlugin = async ({ client }) => ({
     cfg.provider[ID] = {
       name: "FakeCo",
       npm: "@ai-sdk/openai-compatible",
-      api: "https://fake.invalid/v1",
+      // $FAKE_API: the base the provider says its requests go to, as a
+      // plugin in front of a vendor's own API says it (a Mistral Vibe
+      // plugin's https://api.mistral.ai/v1, #5464); the loader's fetch
+      // still sends to $FAKE_BASE
+      api: process.env.FAKE_API || "https://fake.invalid/v1",
       models: {
         "fake-1": { name: "Fake One", limit: { context: 1000, output: 100 } },
         "fake-claude": { name: "Fake Claude", provider: { npm: "@ai-sdk/anthropic" }, modalities: { input: ["text", "image"], output: ["text"] }, limit: { context: 2000, output: 200 } },
@@ -372,7 +376,7 @@ export const FakePlugin = async ({ client }) => ({
     id: ID,
     models: async (p, { auth }) => {
       // $FAKE_MODELS_LOG: each time the hook is asked is a line there
-      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked\n")
+      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked " + (auth?.refresh ?? auth?.key ?? "-") + "\n")
       if (auth?.refresh === "r-dead" || auth?.key === "dead") throw new Error("the vendor refused the sign-in")
       if (auth?.refresh === "r-models-gone") throw Object.assign(new Error("the vendor refused the sign-in"), { signIn: "expired" })
       // a sign-in past its time, said in words only, as Grok's plugin says it

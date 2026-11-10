@@ -475,6 +475,11 @@ type settingsJSON struct {
 	// (RedactRouteTo): those whose every route is set to go unmasked
 	// (gateway.MaskRoute)
 	MaskRouteModels []modelRef `json:"maskRouteModels"`
+	// the providers the user set to Send requests unmasked
+	// (provider.SkipsRedaction), listed in Settings › Privacy, each a way
+	// to its editor, so the switch is found from where masking is
+	// (CrazyMouse_TT on X)
+	UnmaskedProviders []modelRef `json:"unmaskedProviders"`
 	// what each of the disabled models (#1867) turns off now, by pattern
 	DisabledHits map[string][]string `json:"disabledHits,omitempty"`
 	// the model magpie's generate_image tool draws with when ImageGen
@@ -538,6 +543,11 @@ type settingsJSON struct {
 	// where other containers on this host reach the gateway while magpie
 	// runs in one (gateway.ContainerHostURL)
 	LANContainerHost string `json:"lanContainerHost,omitempty"`
+	// a LazyCat app's domain, which only devices with LazyCat's client
+	// reach (gateway.LazyCatURL), and whether the box's LAN addresses are
+	// listed too: when not, the page says how the port gets there
+	LANLazyCat    string `json:"lanLazyCat,omitempty"`
+	LANLazyCatBox bool   `json:"lanLazyCatBox,omitempty"`
 	// those of LANURLs at an internet address, which anyone online can
 	// reach, not only this network
 	LANPublic []string `json:"lanPublic,omitempty"`
@@ -846,6 +856,7 @@ func settingsState() settingsJSON {
 	if s.LAN {
 		s.LANURLs, s.LANContainer = gateway.LANURLs(), gateway.ContainerAddrs()
 		s.LANContainerHost = gateway.ContainerHostURL()
+		s.LANLazyCat, s.LANLazyCatBox = gateway.LazyCatURL(), gateway.LazyCatBox()
 		s.LANPublic = gateway.PublicURLs(s.LANURLs)
 	}
 	s.CodexWarmed, s.ClaudeWarmed = latest(provider.CodexWarmed()), latest(provider.ClaudeWarmed())
@@ -879,6 +890,12 @@ func settingsState() settingsJSON {
 	s.TitleModels, s.MaskRouteModels = []modelRef{}, []modelRef{}
 	// only a provider set to go unmasked can take one (most have none)
 	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction)
+	s.UnmaskedProviders = []modelRef{}
+	for _, p := range provider.All() {
+		if p.SkipsRedaction() {
+			s.UnmaskedProviders = append(s.UnmaskedProviders, modelRef{ID: p.ID, Name: p.Name, Provider: p.ID, PName: p.Name, Icon: p.Icon})
+		}
+	}
 	for _, pat := range s.DisabledModels {
 		if s.DisabledHits == nil {
 			s.DisabledHits = map[string][]string{}
@@ -1131,6 +1148,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 				if u := gateway.ContainerHostURL(); u != "" {
 					side["containerHost"] = u
 				}
+				if u := gateway.LazyCatURL(); u != "" {
+					side["lazyCat"], side["lazyCatBox"] = u, gateway.LazyCatBox()
+				}
 				if u := gateway.PublicURL(); u != "" {
 					side["publicURL"] = u
 				}
@@ -1212,7 +1232,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// so a config rewritten elsewhere shows without a reload
 	mux.HandleFunc("GET /api/drift", func(rw http.ResponseWriter, r *http.Request) {
 		out := map[string]*agent.Drift{}
-		for _, a := range agent.Detected() {
+		for _, a := range agent.DetectedIn(heldAgents()) {
 			if d := a.Drift(); d != nil {
 				out[a.ID] = d
 			}
@@ -2868,7 +2888,7 @@ func held(h http.Handler) http.Handler {
 }
 
 func state() stateJSON {
-	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Load()}
+	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Shared()} // only encoded, never changed
 	// state() is asked for after nearly every click, so the rate — a
 	// network fetch once every TTL — is only worth its rare latency when
 	// cny is actually chosen; usd never looks at it
@@ -2886,10 +2906,11 @@ func state() stateJSON {
 			s.Served++
 		}
 	}
-	for _, a := range agent.Clients() {
+	all := heldAgents()
+	for _, a := range agent.ClientsIn(all) {
 		s.Clients = append(s.Clients, clientJSON{ID: a.ID, Name: a.Name, Icon: a.Icon})
 	}
-	detected := agent.Detected()
+	detected := agent.DetectedIn(all)
 	now := make(map[string]map[string]string, len(detected))
 	for _, a := range detected {
 		if a.Follow != nil {
@@ -2951,7 +2972,7 @@ func state() stateJSON {
 	}
 	if ps, err := profile.Load(); err == nil {
 		for _, n := range profile.Names(ps) {
-			pj := profileJSON{Name: n, Summary: profile.Summary(ps[n]), Agents: profile.Details(ps[n]), InUse: profile.InUse(ps[n], detected, now)}
+			pj := profileJSON{Name: n, Summary: profile.Summary(ps[n]), Agents: profile.DetailsIn(ps[n], all), InUse: profile.InUse(ps[n], detected, now)}
 			if l := ps[n].Library; l != nil {
 				servers, skills := l.On()
 				pj.Library = &profileLibraryJSON{Servers: servers, Skills: skills, Instructions: l.GivesInstructions()}
