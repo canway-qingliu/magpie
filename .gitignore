@@ -7,6 +7,4 @@
 /magpie-dev-backend
 /magpie-dev.new
 /internal/update/launcher-*.com
-node_modules/
-.DS_Store
-/.vscode/
+/internal/gui/assets.zip

@@ -49,11 +49,12 @@ func vendorTLSConfig() *tls.Config {
 // (namedUA): Go's default would say what magpie is written in.
 func upstreamTransport() http.RoundTripper {
 	return namedUA{drawsApart{
-		any:     codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(upstreamHeaderWait)))}},
-		draws:   replayable{freshAfterRegion(netproxy.Dispatch(vendorTransport(0)))},
-		uploads: codexSocket{replayable{freshAfterRegion(netproxy.Dispatch(uploadTransport(upstreamHeaderWait)))}},
+		any:     codexSocket{replayable{freshAfterRegion(stallGuard{netproxy.Dispatch(vendorTransport(upstreamHeaderWait))})}},
+		draws:   replayable{freshAfterRegion(stallGuard{netproxy.Dispatch(vendorTransport(0))})},
+		uploads: codexSocket{replayable{freshAfterRegion(stallGuard{netproxy.Dispatch(uploadTransport(upstreamHeaderWait))})}},
 		slow:    new(atomic.Int64),
-	}}
+	},
+	}
 }
 
 // upstreamHeaderWait is how long a vendor is given to begin answering a

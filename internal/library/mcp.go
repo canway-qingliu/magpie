@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -28,12 +27,14 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/imagemcp"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Server is one MCP server: a command magpie's agents start, or a URL they
 // reach.
 type Server struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Bundle string `json:"bundle,omitempty"` // the Claude Code plugin it came with (plugin.go)
 	// Transport is stdio for a command, http (streamable) or sse for a URL.
 	Transport string            `json:"transport"`
 	Command   string            `json:"command,omitempty"`
@@ -354,7 +355,7 @@ func (f *mcpFile) supports(s *Server) error {
 
 // windowsPath is a program named as Windows names one: C:/…, a path with a
 // backslash in it, or …/npx.cmd.
-var windowsPath = regexp.MustCompile(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
+var windowsPath = lazyre.New(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
 
 // foreign says why an entry by the server's name that magpie can't read as
 // a server is one it mustn't write over, or nil: Zed's server from an
