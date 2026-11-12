@@ -13,6 +13,7 @@ package netproxy
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -172,6 +173,19 @@ func choiceOf(ctx context.Context) string {
 	return c
 }
 
+// Resolve is a proxy choice as the proxy it stands for: a saved proxy
+// (settings.NamedProxy, "@id") as its address with its login, any other
+// choice as it is. A reference to a proxy that isn't there is kept as it
+// is, and Parse refuses it: a request meant for a proxy never goes
+// direct for want of one.
+func Resolve(choice string) string {
+	choice = strings.TrimSpace(choice)
+	if a, ok := settings.ResolveProxy(choice); ok {
+		return a
+	}
+	return choice
+}
+
 // forChoice is the proxy a provider's own choice names; nil for "direct".
 func forChoice(c string) (*url.URL, error) {
 	if c == "direct" {
@@ -248,7 +262,7 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
 		d.CloseIdleConnections()
 	}
 	asked := HTTP1 != nil && HTTP1(req.URL)
-	r := route{choice: choiceOf(req.Context()), h1: asked || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), profile: asked, unchecked: uncheckedHost(req), client: clientRoute(req)}
+	r := route{choice: Resolve(choiceOf(req.Context())), h1: asked || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), profile: asked, unchecked: uncheckedHost(req), client: clientRoute(req)}
 	t := d.base
 	if r != (route{}) {
 		t = d.transport(r)
@@ -287,7 +301,7 @@ func Watch() func() bool {
 	var seen bool
 	return func() bool {
 		// Shared, not Load: this runs on every request
-		now := strings.TrimSpace(settings.Shared().Proxy)
+		now := Resolve(settings.Shared().Proxy)
 		mu.Lock()
 		defer mu.Unlock()
 		moved := seen && proxy != now
@@ -413,6 +427,12 @@ func EnvWith(choice string, env []string) []string {
 	if s == "" {
 		s = strings.TrimSpace(settings.Load().Proxy)
 	}
+	if settings.IsProxyRef(s) {
+		// a saved proxy that is gone: the CLI goes nowhere, not direct
+		if _, ok := settings.ResolveProxy(s); !ok {
+			return withProxy(env, DeadProxy, nil)
+		}
+	}
 	switch s {
 	case "direct":
 		return withProxy(env, "", nil)
@@ -471,9 +491,23 @@ func withProxy(env []string, p string, bypass []string) []string {
 		"ALL_PROXY="+p, "all_proxy="+p, "NO_PROXY="+nos, "no_proxy="+nos)
 }
 
-// Parse reads a proxy address; a bare host:port is an HTTP proxy.
+// DeadProxy is where a CLI is sent for a saved proxy that is gone: a port
+// nothing listens on, so its requests fail where a missing proxy would
+// have sent them straight out.
+const DeadProxy = "http://127.0.0.1:9"
+
+// Parse reads a proxy address; a bare host:port is an HTTP proxy. A saved
+// proxy ("@id") is read as the address it stands for, its login in it;
+// one that is gone is an error.
 func Parse(s string) (*url.URL, error) {
 	s = strings.TrimSpace(s)
+	if settings.IsProxyRef(s) {
+		a, ok := settings.ResolveProxy(s)
+		if !ok {
+			return nil, fmt.Errorf("the saved proxy %q isn't on this computer (deleted, or never synced here); pick another in Settings", settings.ProxyLabel(settings.ProxyID(s)))
+		}
+		s = a
+	}
 	if !strings.Contains(s, "://") {
 		s = "http://" + s
 	}
@@ -510,6 +544,11 @@ func Redact(raw string) string {
 	u, err := Parse(raw)
 	if err != nil {
 		return ""
+	}
+	if settings.IsProxyRef(raw) {
+		// a saved proxy shown as its address, with no login
+		u.User = nil
+		return u.String()
 	}
 	if u.User == nil {
 		return raw

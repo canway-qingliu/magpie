@@ -333,6 +333,9 @@ type stateJSON struct {
 	// GatewayOther is a magpie of another version serving the gateway in
 	// this one's place, which the Agents page says (gateway_older.go)
 	GatewayOther *gatewaySkew `json:"gatewayOther,omitempty"`
+	// GatewayHeld: the program that has the gateway's port when this magpie
+	// couldn't listen on it, as far as it could be read (gateway.PortHeld)
+	GatewayHeld *gateway.PortHeld `json:"gatewayHeld,omitempty"`
 }
 
 // unlistedJSON is a model of a provider kept for routing groups, and the
@@ -458,8 +461,10 @@ type settingsJSON struct {
 	Web           bool `json:"web,omitempty"`
 	// the proxy vendor requests go through now, and where it came from:
 	// settings, environment, system, off or none
-	ProxyNow    string `json:"proxyNow"`
-	ProxySource string `json:"proxySource"`
+	// SavedProxies are the named proxies, without their passwords
+	SavedProxies []savedProxyJSON `json:"proxies"`
+	ProxyNow     string           `json:"proxyNow"`
+	ProxySource  string           `json:"proxySource"`
 	// whether magpie opens at login: the system's record, not a setting;
 	// LoginAllow, the record is there but the user switched it off in
 	// System Settings › Login Items, which is where it's allowed again
@@ -585,6 +590,9 @@ type settingsJSON struct {
 	// Claude Code's two prompt-cache lifetimes as it reads them
 	// (agent.TuneRead): the rows beside its compaction in its settings
 	ClaudeCache []claudeCacheJSON `json:"claudeCache,omitempty"`
+	// ClaudeAttribution: whether Claude Code adds its Co-Authored-By trailer
+	// ("on", "off", or "custom" for the user's own text)
+	ClaudeAttribution string `json:"claudeAttribution,omitempty"`
 	// the magpie model Codex's config runs, when its own window is no
 	// larger than Long conversations' threshold: Codex compacts it at 90%
 	// of that window (codexWindowUnder)
@@ -864,6 +872,7 @@ func settingsState() settingsJSON {
 		s.NotifyProblem = notifyProblem()
 	}
 	s.ProxyNow, s.ProxySource = netproxy.Describe()
+	s.Settings.Proxies, s.SavedProxies = nil, savedProxies() // passwords stay on disk
 	s.NoAccountsEnv = settings.AccountDiscoveryOff() && !s.NoAccountDiscovery
 	for _, name := range []string{"MAGPIE_OTEL_ENABLED", "MAGPIE_OTEL_ENDPOINT", "MAGPIE_OTEL_HEADERS", "MAGPIE_OTEL_METRICS", "MAGPIE_OTEL_BODIES", "MAGPIE_OTEL_BODIES_WHOLE", "MAGPIE_OTEL_SESSIONS"} {
 		if _, ok := os.LookupEnv(name); ok {
@@ -883,6 +892,7 @@ func settingsState() settingsJSON {
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
 	s.ClaudeCache = claudeCacheState()
+	s.ClaudeAttribution = agent.ClaudeAttribution("")
 	s.CodexWindow = codexWindowUnder(s.Settings.ForAgent("codex"), agent.CodexModel(""))
 	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
 	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
@@ -907,8 +917,9 @@ func settingsState() settingsJSON {
 		}
 	}
 	s.TitleModels, s.MaskRouteModels = []modelRef{}, []modelRef{}
-	// only a provider set to go unmasked can take one (most have none)
-	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction)
+	// only a provider or a group set to go unmasked can take one (most have none)
+	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction) ||
+		slices.ContainsFunc(provider.Groups(), func(g provider.Group) bool { return g.Redact == provider.RedactOff })
 	s.UnmaskedProviders = []modelRef{}
 	for _, p := range provider.All() {
 		if p.SkipsRedaction() {
@@ -1125,6 +1136,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// once another answers in its place (visamzh on X), as after its
 		// own restart to update (backAsNew)
 		boot["version"] = Version
+		// and the clock the system shows, 12 or 24 hours, which no webview
+		// tells the page (iXerol on X); a browser tab keeps its own
+		if !isWeb(w) {
+			if hc := systemHourCycle(); hc != "" {
+				boot["hourCycle"] = hc
+			}
+		}
 		if s.Colorblind {
 			boot["colorblind"] = true
 		}
@@ -1898,6 +1916,20 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// whether that longest context also holds a window the user set
+	// (settings.ContextCapAll)
+	mux.HandleFunc("POST /api/settings/context-cap-mode", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ All bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetContextCapAll(in.All); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// an agent's own Long conversations (settings.AgentCompacts): Own
 	// false follows the one for every agent again
 	mux.HandleFunc("POST /api/settings/agent-compact", func(rw http.ResponseWriter, r *http.Request) {
@@ -2036,6 +2068,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// Settings › Proxy's Test (#2076): the address Cloudflare sees a request
 	// from through the proxy in force, and without it
 	mux.HandleFunc("POST /api/proxy/check", handleProxyCheck)
+	proxyRoutes(mux)
+	mux.HandleFunc("POST /api/pipelines/check", handlePipelineCheck)
 	mux.HandleFunc("POST /api/settings/codex-titles", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Model string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -3080,6 +3114,7 @@ func state() stateJSON {
 	s.ConfigBlocked = configBlocked()
 	if served.Load() == nil {
 		s.GatewayOther = gatewayOther.Load()
+		s.GatewayHeld = gateway.LastHeld()
 	}
 	for _, e := range provider.Served() {
 		if e.Group == "" {
@@ -3484,6 +3519,11 @@ func fail(rw http.ResponseWriter, err error) {
 	if errors.As(err, &bun) {
 		out["code"], out["bun"], out["bunWhy"] = "bun_unstartable", bun.Bun, bun.Why
 		out["said"] = bunSaid[bun.Why]
+	}
+	// a proxy's web page inside the text: its title, said in the reader's
+	// language, never the markup
+	if what, ok := webPageSaid(out["error"]); ok && out["said"] == "" {
+		out["error"], out["said"], out["what"] = "A proxy in front of magpie answered, not magpie ("+what+")", "A proxy in front of magpie answered, not magpie ({what})", what
 	}
 	_ = json.NewEncoder(rw).Encode(out)
 }

@@ -676,6 +676,7 @@ magpie gateway-key remove <id>         # revokes remote access
 magpie gateway-key limit <id> week --tokens 2m --cost 5   # its own limit
 magpie gateway-key limit <id> list     # each limit, used, left and reset
 magpie gateway-key limit <id> 10d --tokens 5m   # every 10 days, from now
+magpie gateway-key limit <id> total --cost 300  # $300 in total, until reset
 magpie gateway-key limit <id> 5h --tokens 200k  # every 5 hours, from now
 magpie gateway-key limit <id> add week --cost 20   # one more limit; all must pass
 magpie gateway-key limit <id> add month --cost 20 --model openai/*   # a limit of only OpenAI's models
@@ -699,7 +700,10 @@ Each gateway key can have its own **limit**: a token total, an estimated
 cost in US$, or both, per day, week or month (calendar windows in local
 time: from midnight, from Monday, from the 1st), every N days (#1509;
 N from 1 to 3650) or every N hours (#2102; N from 1 to 8760, such as 5 for
-a subscription's 5-hour pace). An N-day or N-hour cycle starts when the
+a subscription's 5-hour pace), or **in total** (`total`, @Cyrus_4433 on X):
+a limit that never resets by the clock, counted from when it is set and
+started again only by **Reset usage** (`magpie gateway-key limit <id> total
+--cost 300`); its 429 says it stays refused until it is reset or raised. An N-day or N-hour cycle starts when the
 limit is set and runs N×24 or N hours, then the next one starts where it
 ended, so a restart, a time-zone change or a daylight-saving shift doesn't
 move it. Changing only
@@ -1032,6 +1036,22 @@ gateway calls on under mTLS (call the gateway's own port); there is no
 `.p12` for a browser yet (`openssl pkcs12 -export -in client.pem -inkey
 client-key.pem -out laptop.p12` makes one).
 
+**A self-signed certificate.** A Remote magpie, a provider of your own,
+or a preset pointed at a server of yours (Ollama or LM Studio on another
+computer behind `https://`), on a domain whose certificate this computer
+doesn't trust, such as a self-signed one, or one macOS calls "not
+standards compliant", can be trusted as it is (Zhangzhangi on X): Advanced → Server certificate → Trust
+its certificate… shows the certificate the server answers with, its
+SHA-256 fingerprint, names and dates. Check the fingerprint against the
+server's (`openssl x509 -in cert.pem -noout -fingerprint -sha256`) and
+Trust it. From then on that provider's own host is taken with that one
+certificate alone, its chain, name and dates unchecked, and any other
+certificate is refused; the editor says so in red. A certificate renewed
+later has to be trusted again. Verify it again takes the pin off. It is
+off by default and kept for that provider alone. A preset's own vendor
+addresses never take one: the row shows only for an `https://` address
+at a host the preset doesn't name.
+
 Caddy is the alternative that also gets the certificate for you: run
 `relay.example.com { reverse_proxy 127.0.0.1:3425 }` with sharing on and a
 gateway key per client. A proxy on this computer adds forwarding headers,
@@ -1071,7 +1091,11 @@ at `/v2/models`.
 Alibaba's Token Plan is sold in two places, each with its own `sk-sp-` key
 that only its own host takes: on the Qwen AI platform as `qwen-token-plan`
 (`token-plan.maas.qianwenaiapi.com`), and on Alibaba Cloud Bailian as
-`bailian-token-plan` (`token-plan.cn-beijing.maas.aliyuncs.com`). Both serve
+`bailian-token-plan` (`token-plan.cn-beijing.maas.aliyuncs.com`). Alibaba Cloud's international
+plan is `alibaba-token-plan` (`token-plan.ap-southeast-1.maas.aliyuncs.com`),
+and the two at aliyuncs.com show the plan's windows on the Usage page once the
+provider's editor is given the Alibaba Cloud account's AccessKey ID and Secret
+(the `sk-sp-` key cannot read them). All serve
 Chat Completions at `/compatible-mode/v1` and Anthropic Messages at
 `/apps/anthropic`, and carry the plans' documented text models for when the
 host lists none. Bailian's also answers its decision model,
@@ -1591,7 +1615,37 @@ call costs. Each is left out when it isn't known (a routing group has no
   "pricing": { "prompt": "0.0000003", "completion": "0.0000012", "input_cache_read": "0.00000003" } }
 ```
 
-An id magpie's own agents use is refused. In the market an agent's entry has
+An agent that takes the gateway only from how it is started, not from a
+file, says so in `launch`: `{ env: { GEMINI_API_KEY: "{key}",
+GOOGLE_GEMINI_BASE_URL: "{url}" }, model: "--model" }`. While its model is
+one of magpie's, magpie puts a function named after its `bin` in the
+user's shells (zsh, bash, fish, PowerShell) that runs `magpie <id> run`,
+which starts the agent with those variables and the model flag; its own
+model takes the function out. A value is `{key}`, `{url}` or `{v1}`, a
+path after the address at most, so nothing else a plugin says reaches a
+shell profile. Beside `launch`:
+
+- `merge`: key paths of a json config whose object `connect` returns
+  magpie's members of, written beside the user's own and taken out alone
+  (`["customModelsConfig.customModels"]`);
+- `launch.args`: flags put before the user's arguments, each `{config}`,
+  the config's path (`{ "--settings": "{config}" }`); `launch.plain`:
+  arguments that start the agent as it is, never on the gateway
+  (`["remote-control"]`);
+- `base`: for a config handed over by `launch.args`, so magpie's own
+  file, the agent's own settings file: `connect` and `own` get it as
+  `base`, the user's own model is written there, and stepping out takes
+  the config away whole;
+- `own({ config, base, model })`: the user's own models for the picker, each
+  `{ value, model, direct }`, `direct` naming the vendor it goes to;
+- `effort: true`, the Effort field; `wsl: true`, the agent in WSL
+  distros too; `aliases`, other names `magpie <name>` takes.
+
+An id magpie's own agents use is refused, except a built-in's that moves
+onto a community plugin: with `@magpie-community/agent-agy` installed and
+on, `agy` is the plugin's, and what the built-in had wired is handed over
+as the plugin's, so nothing changes for the user; with it off or removed,
+agy is connected no more and the built-in is back. In the market an agent's entry has
 `"kind": "agent"` (`@magpie-community/agent-<name>`). An agent that needs a
 runtime (a timer, a file watched) keeps its agent file in moejs and adds a
 Bun module as the package's `main`; a package that declares `magpie.agent`
@@ -1908,6 +1962,7 @@ magpie model api relay/claude-opus-5-5 relay/claude-sonnet-5 anthropic   # sever
 magpie model api relay/gpt-5.5 --reset                          # auto again: the vendor's list and every URL
 magpie model apis                                               # the models you set an API for
 magpie model apis relay                                         # each of relay's models and its API
+magpie model tier relay/gpt-5.5 ultrafast                      # fast, ultrafast or usual: the speed every request for it is sent at
 ```
 
 It is saved as the editor's Save saves it (`provider.SetModelPrefs`, into
@@ -3475,7 +3530,12 @@ once its key is turned off, removed or rotated.
 The image has a `HEALTHCHECK`: `magpie healthcheck` exits 0 while the gateway
 answers on `MAGPIE_ADDR`, under `serve` and `web` alike, so `docker ps` shows
 the container as healthy (Compose: `depends_on: condition: service_healthy`)
-with no curl in the image. Bind-mounting a folder at `/config` in place of a
+with no curl in the image. The running magpie writes where it listens, its
+pid and how it was started (`app`, `tray`, `web`, `serve`) to `gateway.json` in
+its config folder, so `magpie healthcheck`, `magpie update` and the other
+commands find it from a shell that doesn't have `MAGPIE_ADDR` (a systemd
+service's); `--addr host:port` names it by hand, and `magpie status --json`
+prints the role, pid, version and address for a watchdog. Bind-mounting a folder at `/config` in place of a
 named volume works too; it has to be writable by uid 65532.
 
 #### NAS with agents on other machines
