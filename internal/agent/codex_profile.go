@@ -149,12 +149,23 @@ func codexProfileIn(at place) *Agent {
 		return nil
 	}
 	return atomic(&Agent{
-		ID: "codex", Name: "Codex", Icon: "codex-color", Bin: "codex", Dir: dir, Path: path,
+		ID: "codex", Name: "Codex", Icon: "codex-color", Bin: "codex", Dir: dir, Path: path, signIn: "auth.json",
 		UA:     []string{"codex", "acp-extension-codex"},
 		Unwire: drop,
 		Routed: wired,
 		Sync: func() error {
 			if !wired() {
+				// the profile names magpie and its list, but not a model
+				// magpie serves now (the provider of the model it was set
+				// to was deleted): the list is still magpie's, and Codex
+				// would keep offering the models it had (JNDliuliuM on X)
+				if get("model_provider") == magpieID && get("model_catalog_json") == catalogRef {
+					if cur, err := edit.Read(catalogPath); err == nil {
+						if b := ownList(); string(b) != string(cur) {
+							return writeOwnList(catalogPath, b)
+						}
+					}
+				}
 				return nil
 			}
 			t, _ := edit.GetTOMLTable(path, table)

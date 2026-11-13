@@ -153,6 +153,11 @@ type Agent struct {
 	// the name alone (Empryo, Cursor Private Inference). The setting says
 	// so for each one connected, rather than seeming to do nothing.
 	NoNames bool
+	// Nested: the agent is a part of another one (a Hermes profile,
+	// hermes#<name>) that the Library gives its own skills and servers. No
+	// list of agents or model picker shows it (DetectedIn leaves it out); its
+	// model is a line of the parent's row, and All and Find still reach it.
+	Nested bool
 	// Sync, for an agent that reads magpie's models from a file of its own
 	// rather than asking the gateway, rewrites that list as the catalog is
 	// now — where magpie wrote one; nothing else changes (see SyncCatalog).
@@ -366,6 +371,12 @@ type Agent struct {
 	// not one another tool wrote there first: a JetBrains plugin's
 	// settings.json in Qoder CN's folder (#1495).
 	pathOwn func() bool
+	// signIn is the file a sign-in added in magpie writes in Dir for the
+	// agent when it has none of its own (Codex's auth.json, Claude Code's
+	// .credentials.json off the Mac): a folder holding only that is
+	// magpie's, no sign the agent is here (jiangshangmuyun on X: Codex,
+	// never installed, listed after a ChatGPT account was added).
+	signIn string
 	// sign, when set, is one more sign the agent is here, for a folder
 	// that is dirShared: a file only the agent (or its own app) writes
 	// there (the Qoder app's status file, #2138).
@@ -439,7 +450,7 @@ func (a *Agent) Detected() bool {
 	if _, ok := statKind(a.Path); ok && (a.pathOwn == nil || a.pathOwn()) {
 		return true
 	}
-	if a.Dir != "" && !a.dirShared && agentDir(a.Dir) {
+	if a.Dir != "" && !a.dirShared && agentDir(a.Dir, a.signIn) {
 		return true
 	}
 	if a.sign != nil && a.sign() {
@@ -479,7 +490,9 @@ func binAt(name string) string {
 // agentDir reports whether p is a folder an agent itself made. Skill
 // installers (npx skills and the like) make <folder>/skills for every agent
 // they know, installed or not; a folder holding nothing else is theirs.
-func agentDir(p string) bool {
+// own names a file magpie may have written there itself (Agent.signIn),
+// no sign either.
+func agentDir(p string, own ...string) bool {
 	es, err := os.ReadDir(p)
 	if err != nil {
 		return isDir(p)
@@ -488,7 +501,7 @@ func agentDir(p string) bool {
 		return true
 	}
 	for _, e := range es {
-		if n := e.Name(); n != "skills" && n != ".DS_Store" && !(e.IsDir() && leftover[strings.ToLower(n)]) {
+		if n := e.Name(); n != "skills" && n != ".DS_Store" && !(e.IsDir() && leftover[strings.ToLower(n)]) && !(!e.IsDir() && slices.Contains(own, n)) {
 			return true
 		}
 	}
@@ -652,7 +665,7 @@ func Detected() []*Agent { return DetectedIn(All()) }
 func DetectedIn(all []*Agent) []*Agent {
 	var out []*Agent
 	for _, a := range all {
-		if a.Detected() {
+		if a.Detected() && !a.Nested {
 			out = append(out, a)
 		}
 	}

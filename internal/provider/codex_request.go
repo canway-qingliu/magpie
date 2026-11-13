@@ -69,7 +69,16 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 // User-Agent as it came, with the version in it never older than ver, and
 // its originator as it came. A request from anyone else is named as Codex
 // of version ver, which is what magpie can vouch for.
+//
+// The one exception is the user's own choice of client (settings.CodexClient:
+// the Codex app): that names the client every request goes as, and stands
+// over the client's own name.
 func codexClientHeaders(h http.Header, ver string) {
+	if CodexClient() == "desktop" {
+		h.Set("originator", codexDesktopOriginator)
+		h.Set("User-Agent", codexDesktopUserAgent(ver))
+		return
+	}
 	if h.Get("originator") == "" {
 		h.Set("originator", codexOriginator)
 	}
@@ -137,6 +146,29 @@ func codexOwnUA(ua string) bool {
 	return strings.HasPrefix(ua, "codex") ||
 		strings.HasPrefix(ua, "acp-extension-codex") ||
 		strings.HasPrefix(ua, "vscode_agent_host")
+}
+
+// codexDesktopOriginator is the originator the Codex app gives
+// (set_default_originator, which codex-rs login/src/auth/default_client.rs
+// turns into the first word of the User-Agent as well); its threads record
+// the same name.
+const codexDesktopOriginator = "Codex Desktop"
+
+// codexDesktopBuild is the app's own version, the last part of the
+// User-Agent it sends, from the app's logs (26.1026.10807 is the newest
+// build seen); its codex-rs version is ver.
+const codexDesktopBuild = "26.1026.10807"
+
+// codexDesktopUserAgent is the User-Agent the Codex app of codex-rs version
+// v sends: "Codex Desktop/0.166.0 (Mac OS 26.6.0; arm64) unknown (Codex
+// Desktop; 26.1026.10807)". The terminal is "unknown" on every system,
+// since the app has none.
+func codexDesktopUserAgent(v string) string {
+	ua := codexUserAgent(v)
+	if i := strings.Index(ua, ") "); i >= 0 {
+		ua = ua[:i+2]
+	}
+	return codexDesktopOriginator + strings.TrimPrefix(ua, "codex_cli_rs") + "unknown (" + codexDesktopOriginator + "; " + codexDesktopBuild + ")"
 }
 
 // codexAccountHeaders are the headers of a call Codex makes about the

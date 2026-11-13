@@ -6,6 +6,7 @@ package usage
 
 import (
 	"encoding/csv"
+	"github.com/yetone/magpie/internal/dayzone"
 	"io"
 	"slices"
 	"sort"
@@ -100,10 +101,12 @@ type Filter struct {
 	// Account narrows to the calls a subscription account answered, by its
 	// name as Record.Account gives it (#557)
 	Account string
-	// Failed keeps the rows of the requests the agent got an error for
-	// (Record.LostRequest), Retried those of the requests answered after a
-	// try that failed first (Record.RetriedRequest): what the Requests
-	// card's two counts are of
+	// Failed keeps the rows of every request a try failed on
+	// (Record.FailedTry): those the agent got an error for, the tries
+	// handed on, and the requests a later try answered, as Routing shows
+	// them failed (maohy915 on X). Retried keeps only the requests answered
+	// after a try that failed first (Record.RetriedRequest). The Requests
+	// card still counts each request once, by how it ended.
 	Failed  bool
 	Retried bool
 	Query   string
@@ -223,7 +226,7 @@ func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent
 	if !f.computer(r) {
 		return false
 	}
-	if f.Failed && !r.LostRequest() {
+	if f.Failed && !r.FailedTry() {
 		return false
 	}
 	if f.Retried && !r.RetriedRequest() {
@@ -398,7 +401,7 @@ const UnknownProvider = "session-unknown"
 func logRecord(c sessions.Call) Record {
 	r := Record{Time: c.Time, Agent: c.Agent, Provider: UnknownProvider, Model: c.Model, Served: c.Model, Requested: c.Requested,
 		Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite, CacheWrite1h: c.CacheWrite1h, Reasoning: c.Reasoning, Effort: c.Effort,
-		Millis: c.Millis, TTFT: c.TTFT, Session: c.Session, RequestID: c.RequestID, Error: c.ErrorText, ErrType: c.Error, Subagent: sessions.SubagentOf(c.File), ParentAgent: sessions.SubagentParent(c.File)}
+		Millis: c.Millis, TTFT: c.TTFT, Session: c.Session, RequestID: c.RequestID, MessageID: c.Msg, Error: c.ErrorText, ErrType: c.Error, Subagent: sessions.SubagentOf(c.File), ParentAgent: sessions.SubagentParent(c.File)}
 	if c.Agent == "codex" {
 		r.ResponseID = c.ResponseID
 		r.Compaction = codexCompactionOf(c)
@@ -460,6 +463,7 @@ func ledgerWith(since time.Time, f Filter, recs []Record, logs []sessions.Call) 
 // priced and judged here as this computer's are, and none from until on (a
 // picked range's end, #1492; zero for none).
 func ledgerWithShared(since, until time.Time, f Filter, recs []Record, logs []sessions.Call, others []SharedCall) (rows []Row, sum Totals, agents, providers []string) {
+	logs = ownCalls(logs)
 	matched, pairs, actors, compactions := gatewayMatchesDetails(recs, logs)
 	return ledgerMatched(since, until, f, recs, logs, others, matched, pairs, actors, compactions)
 }
@@ -770,7 +774,7 @@ func timeline(p Period, now, first time.Time) (since time.Time, bucket string, p
 			bucket = "hour"
 			for h := 0; h <= int(d.Hours()); h++ {
 				t := since.Add(time.Duration(h) * time.Hour)
-				pts = append(pts, Point{Label: t.Format("15"), Time: t})
+				pts = append(pts, Point{Label: hourLabel(t), Time: t})
 			}
 		} else {
 			n = int(d.Hours())/24 + 1
@@ -836,7 +840,7 @@ func timeline(p Period, now, first time.Time) (since time.Time, bucket string, p
 		}
 		for h := 0; since.Add(time.Duration(h) * time.Hour).Before(end); h++ {
 			t := since.Add(time.Duration(h) * time.Hour)
-			pts = append(pts, Point{Label: t.Format("15"), Time: t})
+			pts = append(pts, Point{Label: hourLabel(t), Time: t})
 		}
 	case "day":
 		for i := 0; i < n; i++ {
@@ -1231,7 +1235,7 @@ const seriesKeep = 24
 // hour, day or week, for the chart over them. A row is of the point its
 // time falls in; the rows are in any order.
 func LedgerSeries(p Period, rows []Row) (bucket string, pts []SeriesPoint) {
-	return ledgerSeriesAt(p, rows, Clock())
+	return ledgerSeriesAt(p, rows, localNow())
 }
 
 // ledgerSeriesAt is LedgerSeries with the period read at now, the moment the
@@ -1312,4 +1316,10 @@ func NewCoster() func(Record) (float64, bool) {
 		t.add(r, priceOf(r))
 		return t.Cost, t.Unpriced == 0
 	}
+}
+
+// hourLabel is the hour of the real day a point stands for: in a zone whose
+// day starts later (dayzone), its clock is that many hours behind.
+func hourLabel(t time.Time) string {
+	return t.Add(dayzone.Offset(t.Location())).Format("15")
 }

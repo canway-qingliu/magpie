@@ -1045,6 +1045,8 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("GET "+routeEventsPath, s.routeEvents)
 	mux.HandleFunc("GET /v1/magpie/concurrency", s.concurrency)
 	mux.HandleFunc("GET /v1/magpie/limit", s.keyLimit)
+	// the management API, for a key that may manage magpie (admin.go)
+	mux.HandleFunc(AdminPath, s.admin)
 	mux.HandleFunc("GET "+OwnMCPPath, s.ownMCPList)
 	// short-lived keys, issued by a key let issue them or from loopback
 	// (issue_keys.go)
@@ -1566,9 +1568,15 @@ func drawerObjects(r *http.Request) []map[string]any {
 				"owned_by": p.ID, "display_name": name, "magpie_label": name + " · " + p.Name,
 				"modalities": map[string]any{"input": []string{"text"}, "output": []string{"image"}},
 				"magpie_via": catalog.ViaHere(m.Via)}
+			// the endpoints it is drawn through, in new-api's words, which
+			// Cherry Studio's new-api provider reads its kind from
+			// (listModels.ts newApiFetcher): image-generation first
+			ends := []string{"image-generation"}
 			if m.Images {
 				o["modalities"] = map[string]any{"input": []string{"text", "image"}, "output": []string{"image"}}
+				ends = append(ends, "image-edit")
 			}
+			o["supported_endpoint_types"] = ends
 			out = append(out, o)
 		}
 	}
@@ -1593,8 +1601,9 @@ func videomakerObjects(r *http.Request) []map[string]any {
 			name := cmp.Or(m.Name, m.ID)
 			out = append(out, map[string]any{"id": p.ID + "/" + m.ID, "object": "model", "type": "model", "kind": "video", "created": 0,
 				"owned_by": p.ID, "display_name": name, "magpie_label": name + " · " + p.Name,
-				"modalities": map[string]any{"input": []string{"text", "image"}, "output": []string{"video"}},
-				"magpie_via": catalog.ViaHere(m.Via)})
+				"modalities":               map[string]any{"input": []string{"text", "image"}, "output": []string{"video"}},
+				"supported_endpoint_types": []string{"openai-video"},
+				"magpie_via":               catalog.ViaHere(m.Via)})
 		}
 	}
 	return out
@@ -1639,10 +1648,21 @@ func catalogFor(r *http.Request) []provider.Entry {
 // Cherry Studio's, ZCode's pasted ?format=text) would offer an image model
 // in their chat pickers (axelburks on Discord asked for them here). A kind
 // it doesn't know is refused, not read as none.
+//
+// Cherry Studio is the exception: it can't ask, and it tells an image model
+// from a chat one itself. Its provider of magpie (an OpenAI-compatible one)
+// reads only each id, then looks the id's last segment up in its own model
+// registry (provider-registry's models.json, by normalizeModelId), which
+// marks gpt-image-2, dall-e-3, the gemini-*-image, imagen, seedream and
+// grok-imagine models as image generation: those go to its Paintings page,
+// not its chat picker (isNonChatModel). Without them listed, Paintings had
+// no model of magpie's (pingqipai3 on X). So it is listed every kind.
 func listKinds(r *http.Request) (chat, image, video bool, err error) {
 	q, ok := r.URL.Query()["kind"]
 	if !ok {
-		return true, false, false, nil
+		// a list of ids pasted somewhere (?format=text) stays chat models
+		media := cherryStudio(r) && r.URL.Query().Get("format") != "text"
+		return true, media, media, nil
 	}
 	for _, v := range q {
 		for k := range strings.SplitSeq(v, ",") {
@@ -1661,6 +1681,14 @@ func listKinds(r *http.Request) (chat, image, video bool, err error) {
 		}
 	}
 	return chat, image, video, nil
+}
+
+// cherryStudio is a request of Cherry Studio's: with the key magpie's link
+// gives it (agentOf), or a key the user typed in by hand, by its User-Agent,
+// Electron's own with the app's name in it ("Mozilla/5.0 (…)
+// CherryStudio/2.1.2 Chrome/… Electron/…").
+func cherryStudio(r *http.Request) bool {
+	return agentOf(r) == "cherrystudio" || strings.Contains(r.Header.Get("User-Agent"), "CherryStudio/")
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
@@ -1689,6 +1717,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		shown := catalogFor(r)
 		if agent := agentOf(r); agent == "claude-desktop" {
 			data = desktopModels(shown, desktopKnowsMythos(r.Header.Get("User-Agent")))
+			data = append(data, DesktopTierRows(shown, data)...)
 		} else if agent == ScienceID {
 			data = scienceModels(shown)
 		} else {
@@ -3604,7 +3633,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			failTo(w, kept, from, call.Status, cmp.Or(msg, call.Error))
 			break
 		}
-		if used, near := nearCapOf(c, time.Now()); near && aff.Why != "strict" && capHeld(c.p, c.p, c.model, time.Now()) == nil {
+		if used, near := nearCapOf(c, time.Now()); near && aff.Why != "strict" && (len(cands) > 1 || userCapped(c)) && capHeld(c.p, c.p, c.model, time.Now()) == nil {
 			// within nearCapPoints of its usage cap, the account takes one
 			// turn at a time (dyzdyz010 on Discord): busy, the turn goes to
 			// the next one first, this one kept behind them, else waits for
@@ -3634,7 +3663,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				continue
 			}
 			if !ok {
-				if done, err = s.nearCap.take(r.Context(), c.who()); err != nil {
+				// the wait is a known one (noteWait), and the Routing page
+				// says the turn is queued, not that routing goes on
+				// (tmr11235 on X: "路由中" until the turn before it ended)
+				stopQueue := s.showQueued(r.Context(), tr)
+				done, err = s.nearCap.take(r.Context(), c.who())
+				stopQueue()
+				if err != nil {
 					// the agent went away while it waited: nothing was sent
 					call.Status, call.Error = canceled(r.Context())
 					break
@@ -3859,6 +3894,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// short (DeepSeek's 8K), asks for the model's own, relayed or
 		// translated (withOwnOutput)
 		attemptBody = withOwnOutput(c.p, c.model, from, attemptBody)
+		attemptBody = withThinkingRoom(c.p, c.model, from, attemptBody)
 		if roomFor == c.who()+"|"+c.model {
 			if b, ok := withReplyCap(from, attemptBody, roomCap); ok {
 				attemptBody = b
@@ -3884,7 +3920,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				fixed = ""
 			}
 		}
-		if fixed == "" && ruled == "" && effort == "" && agentPick != "" && c.p.Thinks(c.model) {
+		if fixed == "" && ruled == "" && effort == "" && agentPick != "" && !agyLevelAsked(agent, from, attemptBody) && c.p.Thinks(c.model) {
 			// the effort picked in magpie for an agent whose config can't
 			// carry one (Cursor Private Inference, #1003), in place of the
 			// level it sent, on a model that reasons; a member fixed at
@@ -5971,7 +6007,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	body = s.chatTokenField(p, to, body)
 	body = toolOneOfAsAnyOf(p, to, body)
 	body = copilotGeminiToolsFit(p, to, body)
-	body = copilotGeminiToolUnions(p, to, body)
+	body = copilotGeminiToolShapes(p, to, body)
 	body = copilotGrokFlat(p, to, body)
 	body = kimiToolEnumTypes(p, to, body)
 	body = kimiToolRefTypes(p, to, body)
@@ -6123,6 +6159,9 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		}
 	} else {
 		req.Header.Set("User-Agent", userAgentFor(p, ua))
+	}
+	if v := mistralAffinity(p, in, conv.Session); v != "" {
+		req.Header.Set(mistralAffinityHeader, v)
 	}
 	if to == provider.Anthropic {
 		req.Header.Set("anthropic-version", "2023-06-01")
@@ -6476,6 +6515,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	upstream := provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model)
 	body = rewriteModel(body, upstream)
+	if proto == provider.Chat {
+		body = withMistralCacheKey(p, r.Header, body)
+	}
 	if proto == provider.Responses {
 		// Claude's blocks magpie gave a Responses client go back to Claude
 		// alone; to this API the item is its summary, as before
@@ -6609,6 +6651,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// an earlier turn's reasoning_content, which Mistral turns
 			// away, as the thinking part it takes (#494)
 			body = mistralThinking(body)
+			body = mistralImageLimit(body)
 		}
 		if isKimi(p, proto) {
 			// another vendor's reasoning_details (MiMo's, with a stream's
@@ -7732,7 +7775,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			// it: the held end is dropped, the error said in its place,
 			// [DONE] after — no reply that ended as it should with nothing
 			// in it, and no ask again for the budget to burn twice (#2972)
-			msg := cutVoidFailed(p.Name)
+			msg := cutVoidFailed(p.Name, capped)
 			dropHalf()
 			w.Write(append(apart(), streamFailure(provider.Chat, msg)...))
 			w.Write([]byte("data: [DONE]\n\n"))
@@ -7763,7 +7806,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 		if cutVoid(upstreamStop(heldBody), !sniff.tail.said(), spent, capped) &&
 			replyCheck(r.Context()) == nil {
-			msg := cutVoidFailed(p.Name)
+			msg := cutVoidFailed(p.Name, capped)
 			return writeError(w, proto, 502, msg), msg, true
 		}
 		w.WriteHeader(res.StatusCode)
@@ -8168,6 +8211,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			// it; every follow-up of a Codex tool loop was refused, 422
 			// extra_forbidden (#4906)
 			body = mistralThinking(body)
+			body = mistralImageLimit(body)
 		}
 		if to == provider.Responses && !keepsLoneNone(p) {
 			// the "none" buildResponses keeps for a request that turned
@@ -8579,7 +8623,9 @@ const cacheKeyField = "prompt_cache_key"
 // client's never has one): OpenAI's API routes a conversation by it to
 // where its prompt is cached, and a relay in front of it can refuse a
 // request without it ("prompt_cache_key is required", CyberCaius's
-// AnyRouter on Discord). Only OpenAI's own API with a key, and a provider
+// AnyRouter on Discord). Only OpenAI's own API with a key, Mistral's
+// (its prompt_cache_key keeps a conversation on the server that holds its
+// cache; daoche_wuzui on X), and a provider
 // the user added by its address, which may be such a relay: a vendor's
 // preset, a signed-in account (the ChatGPT backend gets its own, as Codex
 // CLI sends it), a plugin, Bedrock and Vertex are sent nothing they didn't
@@ -8597,11 +8643,74 @@ func ownCacheKey(p provider.Provider) bool {
 	if _, ok := p.ExtraBody["!"+cacheKeyField]; ok {
 		return false
 	}
-	if p.AddedByAddress() {
+	if p.AddedByAddress() || isMistral(p) {
 		return true
 	}
 	h := p.VendorHost()
 	return h == "api.openai.com" || strings.HasSuffix(h, ".api.openai.com")
+}
+
+func isMistral(p provider.Provider) bool {
+	return p.Preset == "mistral" || p.Host() == "api.mistral.ai"
+}
+
+// mistralAffinityHeader is the header Mistral routes a conversation's
+// requests by, to the server that holds its KV cache. Mistral's own Vibe
+// sends it every turn (its CHANGELOG: "KV cache warming via x-affinity";
+// vibe/_runtime_config.py request_headers), and pi-ai's
+// buildMistralHeaders sets it from the session id unless the model's or
+// the call's headers name one (daoche_wuzui on X).
+const mistralAffinityHeader = "x-affinity"
+
+// mistralAffinity is the x-affinity a request to Mistral's API goes with:
+// the client's own, as it sent it, else a hash of its session or
+// conversation, never the id itself, the same for every turn of it. Empty
+// for any other vendor, and for a request with no conversation to name.
+// The user's own headers for the provider are put on after it.
+func mistralAffinity(p provider.Provider, in http.Header, session string) string {
+	if !isMistral(p) || p.Account != nil || p.IsPlugin() {
+		return ""
+	}
+	if v := strings.TrimSpace(in.Get(mistralAffinityHeader)); v != "" {
+		return v[:min(len(v), 128)]
+	}
+	if session == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("mistral-affinity\x00" + session))
+	return hex.EncodeToString(sum[:16])
+}
+
+// withMistralCacheKey gives a Chat body bound for Mistral the
+// prompt_cache_key Mistral routes a conversation by to where its prompt is
+// cached (daoche_wuzui on X: poor cache hits). The key is a hash of the
+// session or conversation, never the id itself, and a key the client sent,
+// or the user's extraBody, is the one kept. A body with no conversation to
+// name gets none.
+func withMistralCacheKey(p provider.Provider, in http.Header, body []byte) []byte {
+	if !isMistral(p) || !ownCacheKey(p) || gjson.GetBytes(body, cacheKeyField).Exists() {
+		return body
+	}
+	id := cmp.Or(sessionOf(in), conversationID(in, body))
+	if id == "" {
+		return body
+	}
+	sum := sha256.Sum256([]byte("mistral\x00" + id))
+	// written in ahead of the first member, so the client's own bytes
+	// (and the order its messages were sent in, for the cache) stay as sent
+	i := bytes.IndexByte(body, '{')
+	if i < 0 || len(bytes.TrimSpace(body[:i])) > 0 {
+		return body
+	}
+	rest := bytes.TrimLeft(body[i+1:], " \t\r\n")
+	sep := ","
+	if len(rest) == 0 || rest[0] == '}' {
+		sep = ""
+	}
+	out := make([]byte, 0, len(body)+96)
+	out = append(out, body[:i+1]...)
+	out = append(out, `"`+cacheKeyField+`":"`+hex.EncodeToString(sum[:])+`"`+sep...)
+	return append(out, body[i+1:]...)
 }
 
 // cacheKeyOf is the prompt cache key of the conversation req is a turn
@@ -8685,6 +8794,11 @@ func refusedOptional(status int, msg, body []byte) []string {
 
 var unknownOptionalField = lazyre.New("(?i)\\b(?:unknown (?:name|field|parameter)|unsupported (?:parameter|field|property|argument)|unrecognized (?:request )?(?:argument|parameter)(?: supplied)?):?\\s*['\"\\x60]([a-z_]+)['\"\\x60]")
 var unquotedUnsupportedOptionalField = lazyre.New("(?i)\\bunsupported (?:parameter|field|property|argument):\\s*([a-z_]+)\\b")
+
+// chineseRefusedOptionalField is a relay refusing a field in Chinese:
+// 基元律动's "未知请求字段：prompt_cache_retention" (ldl123292 on X).
+var chineseRefusedOptionalField = lazyre.New("(?:未知|未识别|不支持|不允许|无效)(?:的)?(?:请求)?(?:字段|参数|属性)\\s*[:：]?\\s*['\"\\x60「“]?([a-z_]+)")
+
 var rejectedOptionalField = lazyre.New("(?i)(?:^|\\b(?:parameter|field|property|argument)\\s+)['\"\\x60]([a-z_]+)['\"\\x60]\\s+(?:is\\s+)?(?:unsupported|not supported)\\b")
 
 // leadingRejectedOptionalField is a message that starts with the field's
@@ -8739,6 +8853,11 @@ func unsupportedOptionalField(fault any, field string) bool {
 			return true
 		}
 		for _, match := range unquotedUnsupportedOptionalField.FindAllStringSubmatch(v, -1) {
+			if match[1] == field {
+				return true
+			}
+		}
+		for _, match := range chineseRefusedOptionalField.FindAllStringSubmatch(v, -1) {
 			if match[1] == field {
 				return true
 			}
@@ -9185,7 +9304,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		// at once, asked again nowhere: a void's budget is spent, and a
 		// second ask at the same max_tokens would mostly spend it twice
 		// over before the error (#2972, its review)
-		msg := cutVoidFailed(p.Name)
+		msg := cutVoidFailed(p.Name, request.MaxTokens)
 		return writeError(w, from, 502, msg), msg
 	}
 	if zen != nil {
@@ -9275,8 +9394,13 @@ const cutVoidWords = "cut at its length, the whole output spent on reasoning"
 // with: the empty reply's error — a group asks its next member for one
 // and rests nobody (#1221) — said with why, for the agent to try again or
 // ask for less reasoning rather than go on (#2972).
-func cutVoidFailed(name string) string {
-	return name + ": " + emptyReply + " — " + cutVoidWords
+func cutVoidFailed(name string, cappedAt int) string {
+	msg := name + ": " + emptyReply + " — " + cutVoidWords
+	if cappedAt > 0 {
+		// the limit the request itself named, and what to do about it
+		msg += fmt.Sprintf(" (the request's limit was %d tokens: raise max_tokens in the agent, or ask for less reasoning)", cappedAt)
+	}
+	return msg
 }
 
 // saysSomething tells whether an event is any of a reply an agent shows or

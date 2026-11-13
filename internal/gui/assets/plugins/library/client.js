@@ -284,17 +284,29 @@ magpie.plugin("library", (ctx) => {
   function agentChips(all, on, onChange, opts = {}) {
     on ||= [];
     const box = el("div", "lib-agents");
-    box.style.setProperty("--lib-agent-count", all.length);
+    // a row's profiles of one agent (hermes#coder, omp#work…) are one chip
+    // that opens a menu of them, not one icon each (Yanzhongixuy on X: 20
+    // Hermes glyphs in a row)
+    const fams = onChange.rows ? profileFamilies(all) : new Map();
+    const shown = [], made = new Set();
+    for (const a of all) {
+      const f = familyOf(a.id);
+      if (!fams.has(f)) shown.push({ a });
+      else if (!made.has(f)) { made.add(f); shown.push({ family: f, members: fams.get(f) }); }
+    }
+    box.style.setProperty("--lib-agent-count", shown.length);
     // the row it is put in says so (.with-agents), for its name's room:
     // Safari before 15.4 has no :has(). Every caller appends it at once.
     queueMicrotask(() => box.parentElement?.classList.contains("lib-row") && box.parentElement.classList.add("with-agents"));
-    for (const [i, a] of all.entries()) {
+    for (const [i, g] of shown.entries()) {
+      if (g.family) { box.append(profileChip(g, i, shown.length, all, on, onChange, opts)); continue; }
+      const a = g.a;
       const always = opts.always?.(a) || "";
       const has = on.includes(a.id) || !!always;
       const c = el("button", "lib-ag" + (has ? " on" : "") + (always ? " always" : ""));
       c.dataset.agent = a.id;
       // how many chips are to its right, how far it slides into the hand
-      c.style.setProperty("--k", all.length - 1 - i);
+      c.style.setProperty("--k", shown.length - 1 - i);
       c.append(agentIcon(a.icon));
       if (opts.names) c.append(el("span", "n", a.name));
       const problem = !always && opts.problems?.[a.id];
@@ -330,8 +342,74 @@ magpie.plugin("library", (ctx) => {
       };
       box.append(c);
     }
-    if (opts.all) allChip(box, all, on, onChange);
+    if (opts.all) allChip(box, all, on, onChange, opts);
     return box;
+  }
+
+  // The agent a profile belongs to: hermes#coder and hermes are Hermes,
+  // omp#work@wsl:Ubuntu and omp@wsl:Ubuntu are omp in that distro.
+  const familyOf = (id) => id.replace(/#[^@]*/, "");
+  // Three or more of an agent's own and its profiles are one chip; fewer
+  // fit the row as they are.
+  function profileFamilies(all) {
+    const by = new Map();
+    for (const a of all) {
+      const f = familyOf(a.id);
+      if (!by.has(f)) by.set(f, []);
+      by.get(f).push(a);
+    }
+    for (const [f, ms] of [...by]) if (ms.length < 3 || !ms.some((a) => a.id !== f)) by.delete(f);
+    return by;
+  }
+  // The agents a chip stands for: its own, or the profiles of a group.
+  const idsOf = (x) => x.dataset.members ? x.dataset.members.split("\t") : x.dataset.agent ? [x.dataset.agent] : [];
+  const isChip = (x) => !!(x.dataset.agent || x.dataset.members);
+  const memberOn = (x) => x.dataset.members ? (x.dataset.lit ? x.dataset.lit.split("\t") : []) : x.getAttribute("aria-pressed") === "true" ? [x.dataset.agent] : [];
+  // A group's chip: lit when any profile has the item, dashed while only
+  // some do, with how many in the corner.
+  function paintProfiles(c, lit) {
+    const n = lit.length, total = idsOf(c).length - (c.dataset.fixed ? c.dataset.fixed.split("\t").length : 0);
+    c.dataset.lit = lit.join("\t");
+    const has = n > 0 || !!c.dataset.fixed;
+    c.classList.toggle("on", has);
+    c.classList.toggle("some", n > 0 && n < total);
+    c.setAttribute("aria-pressed", has ? "true" : "false");
+    const k = c.querySelector(":scope > .cnt");
+    if (k) k.textContent = n + (c.dataset.fixed ? c.dataset.fixed.split("\t").length : 0) || "";
+  }
+  function profileChip(g, i, count, all, on, onChange, opts) {
+    const ms = g.members, main = ms.find((a) => a.id === g.family) || ms[0];
+    const always = new Map(ms.map((a) => [a.id, opts.always?.(a) || ""]).filter(([, w]) => w));
+    const fixed = ms.filter((a) => always.has(a.id) || a.unseen).map((a) => a.id);
+    const lit = ms.filter((a) => on.includes(a.id) && !fixed.includes(a.id)).map((a) => a.id);
+    const name = main.id === g.family ? main.name : main.name.split(" · ")[0];
+    const c = el("button", "lib-ag profiles");
+    c.dataset.members = ms.map((a) => a.id).join("\t");
+    c.dataset.fixed = fixed.join("\t");
+    c.style.setProperty("--k", count - 1 - i);
+    c.append(agentIcon(main.icon));
+    if (opts.names) c.append(el("span", "n", name));
+    c.append(el("span", "cnt"));
+    paintProfiles(c, lit);
+    const problems = ms.filter((a) => opts.problems?.[a.id]);
+    if (problems.length) c.classList.add("warn");
+    c.setAttribute("aria-haspopup", "menu");
+    c.title = problems.length ? name + ": " + problems.map((a) => a.name + ": " + opts.problems[a.id]).join("\n") : name;
+    c.onclick = (e) => {
+      e.stopPropagation();
+      const me = e.currentTarget;
+      const pick = ms.filter((a) => !fixed.includes(a.id) && !opts.blocked?.(a));
+      const stuck = ms.filter((a) => !fixed.includes(a.id) && opts.blocked?.(a) && memberOn(me).includes(a.id)).map((a) => a.id);
+      const menu = [{ v: "\x00" + g.family, group: pick.map((a) => a.id), name, literalName: true, note: "" },
+        ...pick.map((a) => ({ v: a.id, name: a.name, literalName: true, note: "", title: opts.problems?.[a.id] || "" }))];
+      openProtoMenu(me, menu, memberOn(me).filter((id) => !stuck.includes(id)), (next) => {
+        const now = [...stuck, ...next.filter((id) => pick.some((a) => a.id === id))];
+        paintProfiles(me, now);
+        const litAll = litOf(me.parentElement);
+        onChange([...keptOf(me.parentElement, all, on), ...litAll], me);
+      }, name, "", "left", true);
+    };
+    return c;
   }
 
   // cannot says a chip's agent can't be given the item, or has it whatever
@@ -341,13 +419,14 @@ magpie.plugin("library", (ctx) => {
   // The agents a row's chips have lit by a click: not one lit because it
   // has the item whatever is ticked.
   function litOf(box) {
-    return [...box.children].filter((x) => x.dataset.agent && !x.classList.contains("always") && !x.classList.contains("unseen") && x.getAttribute("aria-pressed") === "true").map((x) => x.dataset.agent);
+    return [...box.children].filter((x) => isChip(x) && !x.classList.contains("always") && !x.classList.contains("unseen")).flatMap(memberOn);
   }
   // What a click leaves as it was: an agent not shown, one that has the
   // item whatever is ticked, whose chip can't be clicked, and one in a
   // stopped distro magpie can't show the ticks of (unseen).
   function keptOf(box, all, on) {
-    const fixed = [...box.children].filter((x) => x.classList.contains("always") || x.classList.contains("unseen")).map((x) => x.dataset.agent);
+    const fixed = [...box.children].filter((x) => x.classList.contains("always") || x.classList.contains("unseen")).map((x) => x.dataset.agent)
+      .concat([...box.children].flatMap((x) => x.dataset.fixed ? x.dataset.fixed.split("\t") : []));
     return on.filter((id) => !all.some((x) => x.id === id) || fixed.includes(id));
   }
 
@@ -358,8 +437,8 @@ magpie.plugin("library", (ctx) => {
   // choose the agents before an item is added (installing skills, adding or
   // bringing in servers) have it too (#1531): most start with every agent
   // lit, and one agent alone was a click on each of the others.
-  function allChip(box, all, on, onChange) {
-    const can = [...box.children].filter((c) => !cannot(c) && !c.classList.contains("gone")).map((c) => c.dataset.agent);
+  function allChip(box, all, on, onChange, opts = {}) {
+    const can = [...box.children].filter((c) => !cannot(c) && !c.classList.contains("gone")).flatMap((c) => c.dataset.members ? idsOf(c).filter((id) => !c.dataset.fixed?.split("\t").includes(id) && !opts.blocked?.(all.find((a) => a.id === id))) : [c.dataset.agent]);
     if (can.length < 2) return;
     const c = el("button", "lib-ag all", t("All"));
     c.dataset.all = "1";
@@ -378,7 +457,9 @@ magpie.plugin("library", (ctx) => {
     const c = box.querySelector(":scope > .lib-ag.all");
     if (!c) return;
     const can = [...box.children].filter((x) => x.dataset.agent && !cannot(x) && !x.classList.contains("gone"));
-    const n = can.length, full = can.every((x) => x.getAttribute("aria-pressed") === "true");
+    const groups = [...box.children].filter((x) => x.dataset.members);
+    const n = can.length + groups.reduce((k, g) => k + idsOf(g).length - (g.dataset.fixed ? g.dataset.fixed.split("\t").length : 0), 0);
+    const full = can.every((x) => x.getAttribute("aria-pressed") === "true") && groups.every((g) => g.dataset.lit.split("\t").filter(Boolean).length === idsOf(g).length - (g.dataset.fixed ? g.dataset.fixed.split("\t").length : 0));
     c.classList.toggle("on", full);
     c.setAttribute("aria-pressed", full ? "true" : "false");
     c.title = full ? t("Every agent that can take it has it — click to take it from all {n}", { n }) : t("Give it to all {n} agents that can take it", { n });
@@ -396,10 +477,14 @@ magpie.plugin("library", (ctx) => {
   const writing = new Map(); // path + name → { list, name, want, box } while a row's agents are written
   let refused = 0;           // when a row's write last failed, whose error another row's "Written" doesn't cover
   function chipsChange(path, name, list, rowOf) {
-    return async (next, c) => {
+    const go = async (next, c) => {
       // All lights or darkens every chip of the row, a chip only itself
       const every = !!c.dataset.all;
-      for (const x of every ? [...c.parentElement.children].filter((y) => y.dataset.agent && !y.classList.contains("always")) : [c]) {
+      for (const x of every ? [...c.parentElement.children].filter((y) => isChip(y) && !y.classList.contains("always")) : [c]) {
+        if (x.dataset.members) {
+          paintProfiles(x, idsOf(x).filter((id) => next.includes(id) && !x.dataset.fixed?.split("\t").includes(id)));
+          continue;
+        }
         const on = next.includes(x.dataset.agent);
         x.classList.toggle("on", on);
         if (on || x === c) x.classList.remove("via");
@@ -437,12 +522,14 @@ magpie.plugin("library", (ctx) => {
       if (!me.box.isConnected) { if (failed) render(); } // drawn again meanwhile, from the clicks
       else if (fresh && !morphChips(me.box, fresh)) me.box.replaceWith(fresh);
     };
+    go.rows = true; // its chips are a row's: an agent's profiles go into one
+    return go;
   }
   // What All did, said of the item: on for how many of the agents it went
   // to, and which of them couldn't be given it, and why.
   function reportAll(v, me) {
     const what = ({ servers: "mcp:", hooks: "hook:", env: "env:", subagents: "subagent:" }[me.list] || "skill:") + me.name;
-    const shown = [...me.box.children].filter((x) => x.dataset.agent && !cannot(x)).map((x) => x.dataset.agent);
+    const shown = [...me.box.children].filter((x) => isChip(x) && !cannot(x)).flatMap((x) => idsOf(x).filter((id) => !x.dataset.fixed?.split("\t").includes(id)));
     const n = shown.filter((id) => me.want.includes(id)).length;
     const bad = (v.result?.problems || []).filter((p) => p.what === what && shown.includes(p.agent));
     if (!bad.length) {
@@ -486,9 +573,11 @@ magpie.plugin("library", (ctx) => {
   }
   function morphChips(box, fresh) {
     const was = [...box.children], now = [...fresh.children];
-    if (was.length !== now.length || was.some((c, i) => c.dataset.agent !== now[i].dataset.agent)) return false;
+    const key = (c) => c.dataset.agent || c.dataset.members;
+    if (was.length !== now.length || was.some((c, i) => key(c) !== key(now[i]))) return false;
     was.forEach((c, i) => {
       const n = now[i];
+      if (n.dataset.members) { c.dataset.lit = n.dataset.lit; c.dataset.fixed = n.dataset.fixed; c.querySelector(":scope > .cnt")?.replaceWith(n.querySelector(":scope > .cnt").cloneNode(true)); }
       c.className = n.className;
       c.title = n.title;
       if (cannot(n)) c.setAttribute("aria-disabled", "true"); else c.removeAttribute("aria-disabled");
@@ -703,7 +792,7 @@ magpie.plugin("library", (ctx) => {
       ul.append(li);
     }
     if (ul.childElementCount) card.append(ul);
-    const tabNames = { instructions: t("Instructions"), mcp: t("MCP servers"), skills: t("Skills"), hooks: t("Hooks"), env: t("Variables"), subagents: t("Subagents"), plugins: t("Claude plugins") };
+    const tabNames = { instructions: t("Instructions"), mcp: t("MCP servers"), skills: t("Skills"), hooks: t("Hooks"), env: t("Environment variables"), subagents: t("Subagents"), plugins: t("Claude plugins") };
     const others = Object.keys(away).filter((k) => k in tabNames);
     if (others.length) {
       const more = el("div", "lib-problems-away");
@@ -851,7 +940,7 @@ magpie.plugin("library", (ctx) => {
       ["mcp", t("MCP servers") + n("mcp")],
       ["skills", t("Skills") + n("skills")],
       ["hooks", t("Hooks") + n("hooks")],
-      ["env", t("Variables") + n("env")],
+      ["env", t("Environment variables") + n("env")],
       ["subagents", t("Subagents") + n("subagents")],
       ["plugins", t("Claude plugins") + n("plugins")],
       ["rtk", "RTK"],
@@ -905,6 +994,10 @@ magpie.plugin("library", (ctx) => {
     const top = page.scrollTop;
     const focus = document.activeElement?.dataset?.lib; // keep the caret where the reader is typing
     const caret = focus ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+    // an editor open before is open still, not opened again: drawn anew
+    // it would fade and slide in on every render, which a poll's made a
+    // jitter every 2s (Nietzsche_Li on X)
+    const had = new Set([...page.querySelectorAll(".lib-detail[data-detail]")].map((d) => d.dataset.detail));
     page.replaceChildren();
     fits = [];
     // the MCP servers alone with no agent to write to; the tab the reader
@@ -936,6 +1029,7 @@ magpie.plugin("library", (ctx) => {
     else renderSkills(body);
     page.append(body);
     for (const n of body.querySelectorAll(".row-head .note")) n.title = n.textContent;
+    for (const d of page.querySelectorAll(".lib-detail[data-detail]")) if (had.has(d.dataset.detail)) d.classList.add("kept");
     for (const f of fits.splice(0)) f();
     page.scrollTop = top;
     syncLists(); // a long list's rows where the view is, before it's painted
@@ -1429,9 +1523,9 @@ magpie.plugin("library", (ctx) => {
     if (!s?.on || !(s.downloading || s.reading || (s.installed && s.read < s.of && !s.failed))) return;
     semPoll = setTimeout(async () => {
       if (tab !== "memory") return;
-      const was = s.installed;
+      const was = s.installed, before = JSON.stringify(sem);
       try { sem = await api("memory/semantic"); } catch {}
-      render();
+      if (JSON.stringify(sem) !== before) redrawRow(".lib-memsem", semRow);
       semWatch();
       if (!was && sem.installed) rankSoon();
     }, 2000);
@@ -1466,13 +1560,22 @@ magpie.plugin("library", (ctx) => {
     if (!dist?.running && !dist?.dreaming) return;
     distPoll = setTimeout(async () => {
       if (tab !== "memory") return;
+      const before = JSON.stringify(dist), memWas = JSON.stringify(mem);
       try {
         dist = await api("memory/distill");
         if (!dist.running && !dist.dreaming) mem = await api("memory");
       } catch {}
-      render();
+      if (JSON.stringify(mem) !== memWas) render();
+      else if (JSON.stringify(dist) !== before) { redrawRow(".lib-memdistill", distillRow); redrawRow(".lib-memdream", dreamRow); }
       distWatch();
     }, 2000);
+  }
+  // a poll's news drawn in its own row of the memory card, so the
+  // memories under it, and the one open to edit, stay as they are
+  function redrawRow(sel, make) {
+    const old = page.querySelector(".lib-memcard > " + sel);
+    if (old) old.replaceWith(make());
+    else render();
   }
   function memRow(m) {
     const isOpen = !memPicking && memOpen === m.id;
@@ -1511,6 +1614,7 @@ magpie.plugin("library", (ctx) => {
   function memDetail(m) {
     const d = memDraft;
     const det = el("div", "lib-detail lib-memdetail");
+    det.dataset.detail = "mem:" + (m ? m.id : "new");
     const ta = el("textarea", "lib-text small");
     ta.dataset.lib = "mem:" + (m ? m.id : "new");
     ta.value = d.text;
@@ -1518,7 +1622,9 @@ magpie.plugin("library", (ctx) => {
     ta.oninput = () => { d.text = ta.value; };
     ta.onkeydown = (e) => { e.stopPropagation(); if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "Enter")) { e.preventDefault(); saveMemory(); } };
     autosize(ta, 52);
-    if (!m) queueMicrotask(() => ta.focus());
+    // a new one's text takes the focus when it opens, not on every render
+    // after (the reader may be in its tags)
+    if (!m) queueMicrotask(() => { if (!det.classList.contains("kept")) ta.focus(); });
     const pick = (label, value, opts, head, set) => {
       const b = menuButton(label(value), "lib-mempick", () => openProtoMenu(b, opts.map((v) => ({ v, name: label(v), literalName: true, note: "" })), value, (v) => { set(v); render(); }, head));
       return b;
@@ -2305,6 +2411,7 @@ magpie.plugin("library", (ctx) => {
     if (!isOpen) return [row];
 
     const det = el("div", "lib-detail");
+    det.dataset.detail = "set:" + x.id;
     const nm = input(setName(x), t("Name"));
     nm.dataset.lib = "setname:" + x.id;
     nm.className = "lib-setname";
@@ -2444,6 +2551,7 @@ magpie.plugin("library", (ctx) => {
     if (!isOpen) return [row];
 
     const det = el("div", "lib-detail");
+    det.dataset.detail = "agent:" + a.agent;
     if (a.override) {
       const w = el("div", "lib-warn");
       w.append(el("span", "", t("{agent} reads {file} instead of this file while it has anything in it.", { agent: a.name, file: tilde(a.override) }) + " "), pathLink(a.override));
@@ -2654,6 +2762,15 @@ magpie.plugin("library", (ctx) => {
         p.dataset.why = k;
         out.push(p);
       }
+    }
+    // skills in an agent's own folder that the library doesn't have are not
+    // listed, so each stays in its prompt
+    const mine = skillAgents().filter((a) => !a.gone && (a.skillRouter === "on" || a.skillRouter === "none")
+      && lib.foundSkills.some((f) => !f.manual && f.agents.includes(a.id))).map((a) => a.name).join(", ");
+    if (mine) {
+      const p = el("p", "lib-aside lib-hub-why", t("{agents} has skills of its own that aren't in the library, so the router doesn't list them: bring them in below.", { agents: mine }));
+      p.dataset.why = "found";
+      out.push(p);
     }
     return out;
   }
@@ -3989,7 +4106,23 @@ magpie.plugin("library", (ctx) => {
       const g = el("div", "lib-grid");
       if (d.transport === "stdio") {
         const line = lineBox([d.command, ...(d.args || [])].filter((x, i) => i > 0 || x).map(quote).join(" "), "npx -y @modelcontextprotocol/server-github", (v) => { const w = words(v); d.command = w[0] || ""; d.args = w.slice(1); });
-        g.append(...field(t("Command"), line, t("The command and its arguments, as you'd type them")));
+        // a synced server can run its own command here (#3836, #6426;
+        // jinpwng on X: one server on a Mac and in WSL, each with its own
+        // path). Its name, agents and note stay the one server; d.shared
+        // is what the other computers run, the line this computer's
+        const cmdBox = el("div", "lib-cmdbox");
+        cmdBox.append(line);
+        const synced = d.shared ? [d.shared.command, ...(d.shared.args || [])].map(quote).join(" ") : "";
+        if (s && s.transport === "stdio" && !d.local && !s.plugin) {
+          cmdBox.append(d.shared
+            ? button(t("Use the synced command"), "lib-addpair", () => { Object.assign(d, { command: d.shared.command, args: [...(d.shared.args || [])], env: { ...(d.shared.env || {}) } }); d.shared = null; draw(); })
+            : button(t("Use another command on this computer"), "lib-addpair", () => {
+              d.shared = { command: s.shared?.command || s.command, args: [...((s.shared || s).args || [])], env: { ...((s.shared || s).env || {}) } };
+              draw();
+              slot.querySelector(".lib-cmd")?.focus();
+            }));
+        }
+        g.append(...field(t("Command"), cmdBox, d.shared ? t("This computer's own, with its environment below. Your other computers run {cmd}", { cmd: synced }) : t("The command and its arguments, as you'd type them")));
         g.append(...field(t("Environment"), pairs(d.env, "GITHUB_TOKEN", t("value"), (v) => { d.env = v; drawAgents(); }), refHint()));
       } else {
         const url = field2(d.url, "https://example.com/mcp", (v) => { d.url = v.trim(); signBox?.redraw(); });
@@ -4041,7 +4174,7 @@ magpie.plugin("library", (ctx) => {
     // a sign-in's to be of it
     const send = async () => {
       const body = { old: s ? s.name : "", server: { name: d.name, transport: d.transport, agents: d.agents, startupTimeout: d.startupTimeout || 0, local: !!d.local, hub: d.hub || "", note: d.note || "" } };
-      if (d.transport === "stdio") Object.assign(body.server, { command: d.command, args: d.args, env: d.env });
+      if (d.transport === "stdio") Object.assign(body.server, { command: d.command, args: d.args, env: d.env, shared: d.local ? null : d.shared || null });
       else Object.assign(body.server, { url: d.url, headers: d.headers, oauth: d.transport === "http" && d.oauth?.clientId ? d.oauth : null });
       take(await api("library/servers/save", body));
       const was = s;
@@ -4173,14 +4306,14 @@ magpie.plugin("library", (ctx) => {
     const all = envAgents();
     const vars = lib.env || [];
     if (!vars.length) {
-      body.append(empty(t("No variables in the library yet"), t("Add one, and pick the agents that get it."), button(t("＋ Add a variable"), "action", () => editEnv(null))));
+      body.append(empty(t("No environment variables in the library yet"), t("Add one, and pick the agents that get it."), button(t("＋ Add an environment variable"), "action", () => editEnv(null))));
       return;
     }
     const list = el("div", "list lib-list");
     list.append(...[...vars].sort((a, b) => a.name.localeCompare(b.name)).map((v) => envRow(v, all)));
     body.append(list);
     const after = el("div", "after-list");
-    after.append(button(t("＋ Add variable"), "", () => editEnv(null)));
+    after.append(button(t("＋ Add environment variable"), "", () => editEnv(null)));
     body.append(after);
   }
   function envRow(v, all) {
@@ -4201,7 +4334,7 @@ magpie.plugin("library", (ctx) => {
     const d = v ? { name: v.name, value: v.value, agents: [...(v.agents || [])] } : { name: "", value: "", agents: all.filter((a) => !envBlocked()(a)).map((a) => a.id) };
     const ed = el("div", "editor lib-editor lib-envedit");
     const head = el("div", "ehead");
-    head.append(glyph(GLYPH.hook), el("b", "", v ? v.name : t("New variable")));
+    head.append(glyph(GLYPH.hook), el("b", "", v ? v.name : t("New environment variable")));
     ed.append(head);
     const err = el("div", "editor-error");
     const name = field2(d.name, t("e.g. HTTPS_PROXY"), (x) => { d.name = x.trim(); });
@@ -4542,6 +4675,7 @@ magpie.plugin("library", (ctx) => {
     if (subs.some((s) => s.agents?.includes("cursor"))) body.append(el("p", "lib-aside lib-subagents-cursor", t("The Cursor app has these subagents; its cursor-agent command reads only a project's own .cursor/agents.")));
     const skip = all.filter((a) => subagentAgentOf(a.id).no);
     if (skip.length) body.append(el("p", "lib-aside lib-subagents-no", t("magpie can't give subagents to {agents} yet: their chips are greyed, and say why.", { agents: skip.map((a) => a.name).join(", ") })));
+    if (!agentless() && (subs.length || lib.projects.length)) renderProjects(body, "subagents");
   }
 
   function subagentRow(s, all) {
@@ -4797,7 +4931,10 @@ magpie.plugin("library", (ctx) => {
     const who = el("div", "who");
     who.append(el("div", "name mono", p.name + (p.version ? " " + p.version : "")));
     if (p.description) who.append(el("div", "lib-subagentdesc", p.description));
-    const line = pluginParts(p);
+    // counts, not every name: PStack has a hundred (jinpwng on X); the
+    // names are in the dialog, folded
+    const line = [[t("Skills"), p.skills], [t("MCP servers"), p.mcp], [t("Hooks"), p.hooks], [t("Subagents"), p.subagents]]
+      .filter(([, v]) => v?.length).map(([k, v]) => k + " " + v.length).join(" · ");
     if (line) who.append(el("div", "sub lib-plparts", line));
     row.append(glyph(GLYPH.folder), who,
       agentChips(all, p.agents, chipsChange("plugins/agents", p.name, "plugins", (x) => pluginRow(x, all)), { all: true }),
@@ -4815,7 +4952,11 @@ magpie.plugin("library", (ctx) => {
     ed.append(head);
     if (p.description) ed.append(el("p", "lib-subagentdesc", p.description));
     const rows = [[t("Skills"), p.skills], [t("MCP servers"), p.mcp], [t("Hooks"), p.hooks], [t("Subagents"), p.subagents]].filter(([, v]) => v?.length);
-    for (const [label, names] of rows) ed.append(...field(label, el("div", "mono lib-plnames", names.join(", "))));
+    for (const [label, names] of rows) {
+      const d = el("details", "lib-plgroup");
+      d.append(el("summary", "", label + " " + names.length), el("div", "mono lib-plnames", names.join(", ")));
+      ed.append(d);
+    }
     if (p.missing?.length) ed.append(el("div", "hint lib-plmissing", t("Taken out by hand: {names}", { names: p.missing.join(", ") })));
     if (p.left?.length) {
       const left = el("div", "lib-plleft");
@@ -5402,6 +5543,11 @@ magpie.plugin("library", (ctx) => {
       head.append(el("span", "grow"), groupChips(live, all, null));
     }
     head.title = folded ? t("Show its skills") : t("Hide its skills");
+    // a click draws it anew, and the first part's only neighbour above is
+    // the list's empty pad: the page held the next part's heading, pushed
+    // down by the rows opened, and scrolled the clicked one away
+    // (jinpwng on X). Held is its list instead, whose top doesn't move.
+    head.dataset.unrolls = "";
     head.onclick = () => {
       if (filtering) { if (folded) unfiltered.delete(fk); else unfiltered.add(fk); }
       else { folds[fk] = !folded; saveFolds(); }
@@ -5527,7 +5673,7 @@ magpie.plugin("library", (ctx) => {
       for (const g of by.values()) v = await api("library/" + kind + "/agents-some", { names: g.names, agents: g.agents, on });
       return v;
     };
-    const box = agentChips(all, full, async (next) => {
+    const change = async (next) => {
       const on = next.filter((id) => !full.includes(id)), off = full.filter((id) => !next.includes(id));
       box.classList.add("busy");
       try {
@@ -5551,11 +5697,20 @@ magpie.plugin("library", (ctx) => {
         status(e.message, "err", 6000);
       }
       render();
-    }, { all: true, blocked: servers ? (a) => (reach(a) ? "" : n === 1 ? sseBlocked(skills[0])(a) : t("{agent} can reach none of these servers", { agent: a.name }))
+    };
+    // an agent's profiles are one chip here too (Yanzhongixuy on X: a
+    // repository's heading drew an icon for each of twenty Hermes profiles)
+    change.rows = true;
+    const box = agentChips(all, full, change, { all: true, blocked: servers ? (a) => (reach(a) ? "" : n === 1 ? sseBlocked(skills[0])(a) : t("{agent} can reach none of these servers", { agent: a.name }))
       : hooks ? (a) => (reach(a) ? "" : n === 1 ? hookBlocked(skills[0])(a) : t("{agent} can run none of these hooks", { agent: a.name })) : null,
     always: servers || hooks || !n ? null : (a) => (reach(a) ? "" : n === 1 ? alwaysFor(skills[0])(a)
       : t("{agent} reads ~/.agents/skills itself, where all of these are kept — it has them whatever is ticked here", { agent: a.name })) });
     box.classList.add("lib-groupchips");
+    // a profiles chip is half lit when a profile of it has some of the skills
+    for (const c of box.querySelectorAll(".lib-ag[data-members]")) {
+      const ms = idsOf(c).map((id) => all.find((x) => x.id === id)).filter((a) => a && reach(a));
+      if (ms.some((a) => count(a) && count(a) < reach(a)) || (ms.some((a) => count(a)) && !c.classList.contains("on"))) c.classList.add("some");
+    }
     for (const c of box.querySelectorAll(".lib-ag[data-agent]")) {
       const a = all.find((x) => x.id === c.dataset.agent), k = count(a), m = reach(a);
       if (!m) continue;
@@ -6019,12 +6174,14 @@ magpie.plugin("library", (ctx) => {
 
   function renderProjects(body, kind) {
     const rh = el("div", "row-head");
-    rh.append(el("span", "label", t("In projects")), el("span", "grow"));
+    rh.append(el("span", "label", kind === "skills" ? t("Project skills") : kind === "subagents" ? t("Project subagents") : t("Project servers")), el("span", "grow"));
     if (!addingProject) rh.append(button(t("Add a project"), "action lib-updall", () => { addingProject = { dir: "" }; render(); }));
     body.append(rh);
     if (addingProject) body.append(addProjectCard(kind));
     if (!lib.projects.length && !addingProject) {
-      body.append(el("p", "lib-aside", kind === "mcp"
+      body.append(el("p", "lib-aside", kind === "subagents"
+        ? t("Give a project's agents some of these subagents as the project's own: magpie writes them into its .claude/agents and the like, and keeps them out of git.")
+        : kind === "mcp"
         ? t("Give a project's agents some of these servers as the project's own: magpie writes them into its {files}, leaving the rest of each file as it is.", { files: projectFiles() })
         : t("Give a project's agents some of these skills as the project's own: magpie links them into its .claude/skills and .agents/skills and keeps them out of git.")));
       return;
@@ -6071,7 +6228,7 @@ magpie.plugin("library", (ctx) => {
         addingProject = null;
         const p = lib.projects.find((x) => !was.has(x.dir));
         if (p) openProjects.add(p.dir);
-        status(kind === "mcp" ? t("{name} added — pick the servers it gets", { name: p?.name || dir }) : t("{name} added — pick the skills it gets", { name: p?.name || dir }), "ok");
+        status(kind === "subagents" ? t("{name} added — pick the subagents it gets", { name: p?.name || dir }) : kind === "mcp" ? t("{name} added — pick the servers it gets", { name: p?.name || dir }) : t("{name} added — pick the skills it gets", { name: p?.name || dir }), "ok");
       } catch (e) {
         a.busy = false;
         a.error = e.message;
@@ -6082,24 +6239,24 @@ magpie.plugin("library", (ctx) => {
   }
 
   function projectCard(p, kind) {
-    const mcp = kind === "mcp";
+    const mcp = kind === "mcp", sub = kind === "subagents";
     const card = el("div", "list lib-card lib-project" + (p.missing ? " missing" : ""));
     const isOpen = openProjects.has(p.dir);
     const head = el("div", "row lib-row click lib-projhead" + (isOpen ? " open" : ""));
     const who = el("div", "who");
     const nm = el("div", "name", p.name);
     if (p.missing) nm.append(tag(t("Folder is gone"), "warn"));
-    else if (p.copy && !mcp) nm.append(tag(t("Copies"), ""));
+    else if (p.copy && !mcp && !sub) nm.append(tag(t("Copies"), ""));
     who.append(nm);
     const src = el("div", "lib-src");
     src.append(pathLink(p.dir));
     who.append(src);
-    const names = Object.keys((mcp ? p.servers : p.skills) || {}).sort();
+    const names = Object.keys((sub ? p.subagents : mcp ? p.servers : p.skills) || {}).sort();
     const pills = el("div", "lib-tags");
     if (!isOpen) {
       for (const n of names.slice(0, 4)) pills.append(tag(n, "lib-dot"));
       if (names.length > 4) pills.append(tag("+" + (names.length - 4), ""));
-      if (!names.length) pills.append(tag(mcp ? t("No servers yet") : t("No skills yet"), "lib-unchecked"));
+      if (!names.length) pills.append(tag(sub ? t("No subagents yet") : mcp ? t("No servers yet") : t("No skills yet"), "lib-unchecked"));
     }
     const acts = el("div", "lib-rowacts");
     const rm = button("", "lib-icon danger", () => confirmRemoveProject(p));
@@ -6110,11 +6267,12 @@ magpie.plugin("library", (ctx) => {
     chev.append(svg(CHEV_R, 11, 1.7));
     head.append(glyph(GLYPH.folder), who, pills, acts, chev);
     head.onclick = () => { isOpen ? openProjects.delete(p.dir) : openProjects.add(p.dir); projectShown.delete(p.dir); render(); };
-    head.title = mcp ? (isOpen ? t("Hide its servers") : t("Pick the servers it gets")) : isOpen ? t("Hide its skills") : t("Pick the skills it gets");
+    head.title = sub ? (isOpen ? t("Hide its subagents") : t("Pick the subagents it gets")) : mcp ? (isOpen ? t("Hide its servers") : t("Pick the servers it gets")) : isOpen ? t("Hide its skills") : t("Pick the skills it gets");
     card.append(head);
     if (p.problems?.[""]) card.append(el("div", "lib-err", p.problems[""]));
     if (!isOpen) return card;
     if (mcp) return projectServers(p, card);
+    if (sub) return projectSubagents(p, card);
 
     const opts = el("div", "lib-projopts");
     const copy = toggle(p.copy, t("Copy files instead of linking"), (on) =>
@@ -6314,6 +6472,32 @@ magpie.plugin("library", (ctx) => {
     return card;
   }
 
+  // The project's card, open on the Subagents tab: each library subagent
+  // with the chips of the agents that read a project's own subagent folder.
+  function projectSubagents(p, card) {
+    const all = shownAgents().filter((a) => a.projectSubagents);
+    for (const s of lib.subagents || []) {
+      const row = el("div", "row lib-row lib-projskill lib-projsubagent");
+      const w = el("div", "who");
+      const n = el("div", "name mono", s.name);
+      const problem = p.problems?.["subagent:" + s.name];
+      if (problem) n.append(tag(t("Not written"), "warn", problem));
+      w.append(n);
+      const sub = el("div", "sub", problem || s.description || "");
+      sub.title = problem || s.description || "";
+      w.append(sub);
+      const on = (p.subagents?.[s.name] || []).filter((id) => all.some((a) => a.id === id));
+      const say = (next) => next.length
+        ? t("{item} is in {name} for {agents}", { item: s.name, name: p.name, agents: next.map(nameOf).join(", ") })
+        : t("{item} is out of {name}", { item: s.name, name: p.name });
+      row.append(glyph(GLYPH.subagent), w, agentChips(all, on, projectChange("projects/subagents", p.dir, s.name, say)));
+      card.append(row);
+    }
+    if (!(lib.subagents || []).length) card.append(el("p", "lib-aside lib-projfoot", t("No subagents in the library yet")));
+    card.append(el("p", "lib-aside lib-projfoot", t("Written into the project's own agents folder, one file per subagent; a file magpie makes is kept out of git, its .gitignore untouched. A file there by the same name that isn't magpie's is left as it is.")));
+    return card;
+  }
+
   function confirmRemoveProject(p) {
     const ed = el("div", "editor lib-editor");
     const head = el("div", "ehead");
@@ -6433,7 +6617,9 @@ magpie.plugin("library", (ctx) => {
     bar.append(el("span", "label", t("Put skills in")), segs([["agents", t("Each agent's own folder")], ["shared", "~/.agents/skills"]], where, (w) => {
       if (w !== where) change("skills/where", { how: w }, w === "shared" ? t("Every skill is in ~/.agents/skills now") : t("Skills go to the agents they're ticked for now"));
     }));
-    bar.append(el("span", "note", where === "shared"
+    bar.append(el("span", "note", where === "shared" && lib.skillRouter
+      ? t("The skill router lists nothing while every skill is in ~/.agents/skills: choose each agent's own folder.")
+      : where === "shared"
       ? t("Every skill on here is linked into ~/.agents/skills too: each agent that reads that folder has every skill, whatever is ticked. The files stay in the library.")
       : t("Each agent gets the skills ticked for it, in its own folder.")));
     return bar;
@@ -6465,6 +6651,7 @@ magpie.plugin("library", (ctx) => {
       ["shared", "{agents} reads ~/.agents/skills, which other agents read too, so it keeps each skill of its own."],
       ["taken", "A skill in the library is called magpie-skills, so {agents} keeps each skill of its own: give that skill another name for the router to be used."],
       ["own", "{agents} has a skill called magpie-skills of its own, which magpie leaves as it is, so it keeps each skill of its own."],
+      ["none", "No skill of the library's is listed for {agents}: tick one for it, or list one kept out of the router."],
     ];
     for (const [k, text] of why) {
       const n = names(k);
@@ -6473,6 +6660,15 @@ magpie.plugin("library", (ctx) => {
         p.dataset.why = k;
         out.push(p);
       }
+    }
+    // skills in an agent's own folder that the library doesn't have are not
+    // listed, so each stays in its prompt
+    const mine = skillAgents().filter((a) => !a.gone && (a.skillRouter === "on" || a.skillRouter === "none")
+      && lib.foundSkills.some((f) => !f.manual && f.agents.includes(a.id))).map((a) => a.name).join(", ");
+    if (mine) {
+      const p = el("p", "lib-aside lib-hub-why", t("{agents} has skills of its own that aren't in the library, so the router doesn't list them: bring them in below.", { agents: mine }));
+      p.dataset.why = "found";
+      out.push(p);
     }
     return out;
   }
@@ -7287,6 +7483,7 @@ magpie.plugin("library", (ctx) => {
     if (readers) ed.append(el("p", "lib-confirm", one
       ? t("{agents} read ~/.agents/skills themselves. They keep it, ticked here, and you can turn it off for any of them, or on this computer only.", { agents: readers })
       : t("{agents} read ~/.agents/skills themselves. They keep them, ticked here, and you can turn each off for any of them, or on this computer only.", { agents: readers })));
+    if (lib.sharedSkills) ed.append(el("p", "lib-confirm", t("Every skill is kept in ~/.agents/skills now, which can't go with choosing agents. That setting goes off: magpie's links there are taken away, your own entries stay.")));
     ed.append(el("p", "lib-confirm lib-muted", one
       ? t("To put it back: {cmd}", { cmd: "magpie library skill hand-back " + s.name })
       : t("To put one back: {cmd}", { cmd: "magpie library skill hand-back <name>" })));
