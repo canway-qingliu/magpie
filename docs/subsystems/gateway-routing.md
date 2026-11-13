@@ -16,7 +16,11 @@ served by a plugin are in [Provider and plugin ownership](provider-plugins.md).
 `upstreamTransport` sends gateway requests through `netproxy.Dispatch` and
 the shared vendor transport. The ChatGPT backend is selected for HTTP/1.1 by
 `provider/codex_http1.go`; that route alone gets the Codex TLS profile and has
-automatic gzip requests disabled. Other vendors use Go's default TLS profile.
+automatic gzip requests disabled. Each saved account of magpie's takes a
+profile of its own, so two accounts of one subscription reach that backend as
+two clients, and each account's transport is its own; Codex's own sign-in
+keeps the profile no account names. Other vendors use Go's default TLS
+profile.
 A request that names no client of its own goes with `magpie/<version>`
 (`namedUA`): Go's own default, `Go-http-client/1.1`, says what magpie is
 written in, and no vendor needs to know that. A request that names one — an

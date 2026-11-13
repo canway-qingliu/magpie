@@ -28,6 +28,7 @@ import (
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/lazyre"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -982,6 +983,17 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 	s.codexUpstreamOn(w, r, rest, body, nil)
 }
 
+// codexProfileOf is the name the account on answers to for its TLS
+// identity (netproxy.TLSProfile): its agent and its user, in lower case as
+// the accounts list tells two apart. Its "" is Codex's own sign-in, which
+// keeps the profile no account names.
+func codexProfileOf(on *provider.Provider) string {
+	if on == nil || on.Account == nil || on.Account.AgentsOwn() {
+		return ""
+	}
+	return on.Account.Agent + "/" + strings.ToLower(strings.TrimSpace(on.Account.User))
+}
+
 // codexUpstreamOn is codexUpstream signed by the account on instead of
 // Codex's own sign-in, when on isn't nil (compactOn).
 func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest string, body []byte, on *provider.Provider) {
@@ -1266,6 +1278,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			ctx := provider.ViaSignedIn(traced, "codex")
 			if on != nil {
 				ctx = on.Via(traced)
+				// the account's own TLS identity, so two accounts of one
+				// subscription reach the backend as two clients
+				ctx = netproxy.WithTLSProfile(ctx, codexProfileOf(on))
 			}
 			req, err := http.NewRequestWithContext(ctx, r.Method, u, bytes.NewReader(body))
 			if err != nil {

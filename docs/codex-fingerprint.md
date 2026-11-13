@@ -21,6 +21,53 @@ failed a TLS record and is spoken HTTP/1.1 to for six hours
 base transport's TLS configuration and its automatic compression: Codex's
 profile is Codex's, and is not put on another vendor's connections.
 
+### Per-account profiles
+
+Codex's own sign-in takes `codexTLSConfig`. A saved account of magpie's
+takes `codexTLSConfigFor(name)` instead: two accounts of one subscription
+reach the backend as two clients, and an account is the same client every
+time it goes.
+
+`name` is the account's agent and user, in lower case —
+`codex/a@example.com`, and `codex/b@example.com · team · acme` for a second
+Team seat of an email (#1424). A profile is made from a stable hash of that
+name, so the same account has the same one on any machine and in any run.
+The agent's own sign-in keeps `codexTLSConfig`, the profile no account
+names.
+
+**What tells two profiles apart is which suites and curves are in each,
+never the order they are written in.** Go's `crypto/tls` takes
+`Config.CipherSuites` and `Config.CurvePreferences` as sets, and offers its
+own preference order over them (`Config.cipherSuites`,
+`Config.curvePreferences`, which filter Go's internal order by membership).
+Two configs naming the same set produce the same ClientHello. So an
+account's profile is a *part* of `codexAllCipherSuites` and
+`codexAllCurves`, and a difference of order alone would be no difference at
+all.
+
+Two more of Go's constraints shape a profile:
+
+- TLS 1.3 suites come after whatever `CipherSuites` names, from Go's own
+  list (`defaultCipherSuitesTLS13`), so leaving one out of
+  `CipherSuites` says nothing. Only TLS 1.2 suites are the config's to
+  choose, and only they vary by account; the 1.3 three always go.
+- `Config.SignatureSchemes` is server-side only — a client's list is
+  Go's, not the config's — so it cannot vary by account.
+
+Every profile keeps X25519 and at least a second curve, and at least two
+TLS 1.2 suites. A hello naming one curve, or Go's own X25519-less shape,
+is a client no backend has seen, which marks it more than the account it is
+meant to stand for.
+
+Because the profile is part of `netproxy.route`, each account's transport —
+and its pooled connections — is its own: a connection dialled for one
+account is never carried to another. `netproxy.TLSProfile` is where the
+gateway supplies `codexTLSConfigFor`, and `netproxy.WithTLSProfile` is what
+names the account on the request's context. It is set where the account is
+known: `provider.codexSignFor` for a saved account, and `codexProfileOf` on
+the backend's own route (`codexUpstreamOn`). A route `netproxy.HTTP1` did
+not select takes no profile, whatever its context names.
+
 ## Request identity
 
 Two routes reach the ChatGPT backend, and they differ in who signs the
@@ -118,7 +165,12 @@ terminal; only that version is raised, where it is older.
 - Codex backend and relay callers:
   [`codex_backend.go`](../internal/gateway/codex_backend.go),
   [`codex_relay.go`](../internal/gateway/codex_relay.go)
-- Tests for header sanitation and route-specific TLS/compression:
+- The per-account profiles and what builds them:
+  [`codex_fingerprint.go`](../internal/gateway/codex_fingerprint.go),
+  [`codex_request.go`](../internal/provider/codex_request.go)
+- Tests for header sanitation, route-specific TLS/compression and the
+  per-account profiles:
   [`codex_fingerprint_test.go`](../internal/gateway/codex_fingerprint_test.go),
   [`codex_header_policy_test.go`](../internal/gateway/codex_header_policy_test.go),
+  [`codex_request_test.go`](../internal/provider/codex_request_test.go),
   [`netproxy_test.go`](../internal/netproxy/netproxy_test.go)

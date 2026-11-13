@@ -3,6 +3,7 @@ package gateway
 import (
 	"crypto/tls"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -11,6 +12,9 @@ import (
 // codexTLSConfig is used only for requests to the ChatGPT backend. It follows
 // rustls's protocol, cipher and curve choices, but Go's TLS stack does not
 // reproduce rustls's complete ClientHello byte for byte.
+//
+// It is the profile a request takes when no account names its own
+// (codexTLSConfigFor).
 func codexTLSConfig() *tls.Config {
 	config := &tls.Config{}
 	if upstreamTLS != nil {
@@ -18,7 +22,17 @@ func codexTLSConfig() *tls.Config {
 	}
 	config.MinVersion = tls.VersionTLS12
 	config.MaxVersion = tls.VersionTLS13
-	config.CipherSuites = []uint16{
+	config.CipherSuites = codexAllCipherSuites
+	config.CurvePreferences = codexAllCurves
+	config.NextProtos = []string{"h2", "http/1.1"}
+	return config
+}
+
+// codexAllCipherSuites is every suite a Codex route may offer, and
+// codexAllCurves every curve it may name. A profile of an account is a
+// part of each, so no account offers one magpie has no name for.
+var (
+	codexAllCipherSuites = []uint16{
 		tls.TLS_AES_128_GCM_SHA256,
 		tls.TLS_AES_256_GCM_SHA384,
 		tls.TLS_CHACHA20_POLY1305_SHA256,
@@ -29,10 +43,88 @@ func codexTLSConfig() *tls.Config {
 		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 	}
-	config.CurvePreferences = []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
-	config.NextProtos = []string{"h2", "http/1.1"}
+	codexAllCurves = []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
+)
+
+// codexTLSConfigFor is the TLS identity of the account named. Two accounts
+// of one subscription reach the backend as two clients, distinct in what
+// their hellos offer: their curves, and with them the key share each
+// sends, and their cipher suites.
+//
+// What tells them apart is which suites and curves are in a profile, never
+// the order they are written in: Go's crypto/tls takes a list as a set and
+// offers its own preference order over it (Config.cipherSuites,
+// Config.curvePreferences). So each account's profile is a part of
+// codexAllCipherSuites and codexAllCurves, chosen by the account's name —
+// the same account, the same profile, whatever machine it runs from.
+//
+// X25519 is in every profile, as it is in every recent client's: a hello
+// that offers it none is a client no backend has seen, which is a mark of
+// its own. What varies is P-256 and P-384 beside it, and the TLS 1.2
+// suites — a TLS 1.3 suite's place in a hello is Go's own, whatever the
+// config names (Config.cipherSuites filters TLS 1.0-1.2 alone).
+func codexTLSConfigFor(account string) *tls.Config {
+	// FNV-1a, then fmix64: a stable hash, unlike hash/maphash's per-run
+	// seed, mixed so each bit of it is the account's alone
+	var h uint64 = 14695981039346656037
+	for i := 0; i < len(account); i++ {
+		h ^= uint64(account[i])
+		h *= 1099511628211
+	}
+	h = fmix64(h)
+	// X25519 always, as every recent client offers it; P-256 and P-384 by a
+	// bit each, and P-256 when neither, since a hello naming one curve is a
+	// client no backend has seen
+	curves := []tls.CurveID{tls.X25519}
+	for i, c := range []tls.CurveID{tls.CurveP256, tls.CurveP384} {
+		if h>>uint(i+2)&1 == 0 {
+			curves = append(curves, c)
+		}
+	}
+	if len(curves) == 1 {
+		curves = append(curves, tls.CurveP256)
+	}
+	// the TLS 1.2 suites by a bit each, TLS 1.3's always: Go offers those
+	// after the set the config names (Config.cipherSuites filters TLS
+	// 1.0-1.2 alone), so leaving one out would say nothing of the account
+	suites := make([]uint16, 0, len(codexAllCipherSuites))
+	var chosen []uint16
+	for i, s := range codexAllCipherSuites {
+		switch {
+		case !tls12Suite(s):
+			suites = append(suites, s)
+		case h>>uint(i+16)&1 == 0:
+			chosen = append(chosen, s)
+		}
+	}
+	for i := 0; len(chosen) < 2 && i < len(codexAllCipherSuites); i++ {
+		// every account offers two TLS 1.2 suites, so a hello offering one
+		// is no account of magpie's
+		if s := codexAllCipherSuites[len(codexAllCipherSuites)-1-i]; tls12Suite(s) && !slices.Contains(chosen, s) {
+			chosen = append(chosen, s)
+		}
+	}
+	suites = append(suites, chosen...)
+	config := codexTLSConfig()
+	config.CurvePreferences = curves
+	config.CipherSuites = suites
 	return config
 }
+
+// fmix64 is murmur3's finalizer: it spreads a value's every bit, so a
+// change anywhere in an account's name moves the bits a profile reads.
+func fmix64(h uint64) uint64 {
+	h ^= h >> 33
+	h *= 0xff51afd7ed558ccd
+	h ^= h >> 33
+	h *= 0xc4ceb9fe1a85ec53
+	h ^= h >> 33
+	return h
+}
+
+// tls12Suite says s is a TLS 1.0-1.2 suite: the ones Config.CipherSuites
+// has a say in. TLS 1.3's are 0x1301 to 0x1303.
+func tls12Suite(s uint16) bool { return s < tls.TLS_AES_128_GCM_SHA256 || s > 0x1303 }
 
 // codexRequestHeader says a header says what the request itself is, and
 // not who the caller is: the Lite flag, which says the request is a

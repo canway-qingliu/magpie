@@ -20,7 +20,10 @@ import (
 // system's roots, but for a test trusting its own server.
 var upstreamTLS *tls.Config
 
-func init() { netproxy.HTTP1TLSConfig = codexTLSConfig }
+func init() {
+	netproxy.HTTP1TLSConfig = codexTLSConfig
+	netproxy.TLSProfile = codexTLSConfigFor
+}
 
 func vendorTLSConfig() *tls.Config {
 	if upstreamTLS == nil {

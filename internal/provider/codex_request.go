@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/lazyre"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -33,7 +33,19 @@ const codexOriginator = "codex_cli_rs"
 // codexSign authenticates a request to the ChatGPT backend with the
 // tokens token hands out, and says it comes from Codex CLI.
 func codexSign(token func(context.Context) (tok, accountID string, err error)) func(context.Context, *http.Request, []byte) error {
+	return codexSignFor("", token)
+}
+
+// codexSignFor is codexSign for the account named account, whose TLS
+// identity the request takes (netproxy.WithTLSProfile): two accounts of
+// one subscription reach the backend as two clients, apart in what their
+// hellos offer. Its "" is the account magpie is signed in to first, which
+// keeps the profile every request took before an account could name one.
+func codexSignFor(account string, token func(context.Context) (tok, accountID string, err error)) func(context.Context, *http.Request, []byte) error {
 	return func(ctx context.Context, req *http.Request, body []byte) error {
+		if account != "" {
+			*req = *req.WithContext(netproxy.WithTLSProfile(req.Context(), account))
+		}
 		tok, accountID, err := token(ctx)
 		if err != nil {
 			return err
@@ -55,6 +67,14 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 		sessionHeaders(req.Header, body)
 		return nil
 	}
+}
+
+// codexProfileName names a saved account of agent for its TLS identity:
+// its user as the accounts list tells two apart, in lower case as the
+// account is keyed elsewhere (accountKey) — a second Team seat of an
+// email being "email · Team · <workspace>" (#1424).
+func codexProfileName(agent, user string) string {
+	return agent + "/" + accountKey(user)
 }
 
 // codexClientHeaders are what every request Codex CLI makes carries,
@@ -112,7 +132,7 @@ func CodexClientIdentity(h http.Header) {
 // codexUAVersionRE finds the version in a Codex client's User-Agent
 // ("codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0" — the first
 // one, which is the client's, not the system's).
-var codexUAVersionRE = regexp.MustCompile(`\d+\.\d+\.\d+(\.\d+)*`)
+var codexUAVersionRE = lazyre.New(`\d+\.\d+\.\d+(\.\d+)*`)
 
 // codexUserAgentFor is the User-Agent a request to the ChatGPT backend goes
 // with: the Codex client's own, when it named one, with the version in it

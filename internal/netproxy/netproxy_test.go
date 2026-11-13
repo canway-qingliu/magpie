@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -383,5 +384,111 @@ func TestWatchSeesTheGlobalProxyMove(t *testing.T) {
 	v := Watch()
 	if v() {
 		t.Fatal("a check of its own starts in the middle")
+	}
+}
+
+// An account's own TLS identity is what the ChatGPT backend's route
+// offers it: two accounts of a subscription are two clients to the
+// backend, apart in the curves their hellos name and in the suites they
+// offer, and an account says the same one every time. A name that picks
+// no profile of its own keeps the one every request takes.
+func TestDispatchTLSProfilePerAccount(t *testing.T) {
+	var mu sync.Mutex
+	hellos := map[string]tls.ClientHelloInfo{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Write([]byte(r.Header.Get("X-Which")))
+	}))
+	srv.TLS = &tls.Config{GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		hellos[fmt.Sprint(h.CipherSuites, h.SupportedCurves, h.ServerName)] = *h
+		return nil, nil
+	}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+
+	// what an account's profile is made of, as the gateway makes it: two
+	// accounts whose sets of curves differ
+	profiles := map[string]*tls.Config{
+		"codex/a@example.com": {RootCAs: pool, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13,
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}},
+		"codex/b@example.com": {RootCAs: pool, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13,
+			CurvePreferences: []tls.CurveID{tls.CurveP256, tls.CurveP384}},
+	}
+	wasProfile := TLSProfile
+	TLSProfile = func(account string) *tls.Config { return profiles[account].Clone() }
+	t.Cleanup(func() { TLSProfile = wasProfile })
+	wasConfig := HTTP1TLSConfig
+	HTTP1TLSConfig = func() *tls.Config {
+		return &tls.Config{RootCAs: pool, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13,
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP384}}
+	}
+	t.Cleanup(func() { HTTP1TLSConfig = wasConfig })
+	wasH1 := HTTP1
+	HTTP1 = func(u *url.URL) bool { return true }
+	t.Cleanup(func() { HTTP1 = wasH1 })
+	d := Dispatch(&http.Transport{Proxy: Func, ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{RootCAs: pool}}).(*dispatch)
+	t.Cleanup(d.CloseIdleConnections)
+
+	ask := func(account string) {
+		ctx := WithTLSProfile(context.Background(), account)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := d.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("%q: %v", account, err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}
+	ask("codex/a@example.com")
+	ask("codex/a@example.com") // the same account, a second time
+	ask("codex/b@example.com")
+	ask("") // one that names no profile
+
+	// every hello is to the same host, so they are told apart by their curves
+	seen := [][]tls.CurveID{}
+	for _, h := range hellos {
+		seen = append(seen, h.SupportedCurves)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("hellos seen: %d, want 3 (two accounts and magpie's own)", len(seen))
+	}
+	// the hellos come in no order of their own, so each is looked for by
+	// the set of curves it names
+	for _, want := range [][]tls.CurveID{
+		{tls.X25519, tls.CurveP384},                // magpie's own
+		{tls.CurveP256, tls.CurveP384},             // account b
+		{tls.X25519, tls.CurveP256, tls.CurveP384}, // account a
+	} {
+		found := false
+		for _, got := range seen {
+			if slices.Equal(got, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no hello offered curves %v: %v", want, seen)
+		}
+	}
+	// two accounts are two routes: a connection pooled for one is never
+	// the other's
+	if d.own[route{h1: true, profile: true, tlsProfile: "codex/a@example.com"}] ==
+		d.own[route{h1: true, profile: true, tlsProfile: "codex/b@example.com"}] {
+		t.Error("two accounts share one transport")
+	}
+	// the route is the account's only while the route is the ChatGPT
+	// backend's: another host's request keeps what it had
+	HTTP1 = func(u *url.URL) bool { return false }
+	req, _ := http.NewRequestWithContext(WithTLSProfile(context.Background(), "codex/a@example.com"), http.MethodGet, srv.URL, nil)
+	if r := routeOf(req); r.tlsProfile != "" {
+		t.Errorf("a route HTTP1 did not select took a TLS profile: %+v", r)
 	}
 }

@@ -591,7 +591,7 @@ func codexFetchSaved(ctx context.Context) {
 	codexSavedAsked.Unlock()
 	for _, d := range ask {
 		user := d.user
-		sign := codexSign(func(ctx context.Context) (string, string, error) { return savedLoginToken(ctx, "codex", user) })
+		sign := codexSignFor(codexProfileName("codex", user), func(ctx context.Context) (string, string, error) { return savedLoginToken(ctx, "codex", user) })
 		// through the account's own proxy, if it has one
 		if ms, ver, err := codexModelsAsked(ViaLogin(ctx, "codex", user), sign); err == nil {
 			catalog.SaveLiveAsked(accountModels("codex", user), CodexBase, ver, ms)

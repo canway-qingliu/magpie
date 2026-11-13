@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -76,5 +77,55 @@ func TestIsCodexClient(t *testing.T) {
 				t.Errorf("isCodexClient(%v) = %v, want %v", tt.head, got, tt.want)
 			}
 		})
+	}
+}
+
+// Two accounts of one subscription reach the ChatGPT backend as two
+// clients: their hellos offer different curves and different cipher
+// suites. One account is the same client every time, whatever machine or
+// run, so its profile is made from its name alone.
+//
+// What tells a hello apart from another is which suites and curves are in
+// it, not the order they are written in: Go's crypto/tls offers its own
+// order over the set a config names. So a profile that differs only in
+// order is no different profile, and the test says so by comparing sets.
+func TestCodexTLSConfigPerAccount(t *testing.T) {
+	accounts := []string{"codex/a@example.com", "codex/b@example.com", "codex/c@example.com"}
+	seen := map[string]string{}
+	for _, account := range accounts {
+		config := codexTLSConfigFor(account)
+		if config.MinVersion != tls.VersionTLS12 || config.MaxVersion != tls.VersionTLS13 {
+			t.Errorf("%s: TLS versions = %d..%d", account, config.MinVersion, config.MaxVersion)
+		}
+		key := fmt.Sprint(config.CipherSuites, config.CurvePreferences)
+		if other, ok := seen[key]; ok {
+			t.Errorf("%s has the same TLS identity as %s", account, other)
+		}
+		seen[key] = account
+		// an account's profile is a part of what a Codex route may offer,
+		// and one it can still speak TLS with
+		if len(config.CipherSuites) == 0 || len(config.CurvePreferences) < 2 {
+			t.Errorf("%s offers %d suites and %d curves", account, len(config.CipherSuites), len(config.CurvePreferences))
+		}
+		for _, s := range config.CipherSuites {
+			if !slices.Contains(codexAllCipherSuites, s) {
+				t.Errorf("%s offers suite %d, which no Codex route does", account, s)
+			}
+		}
+		for _, c := range config.CurvePreferences {
+			if !slices.Contains(codexAllCurves, c) {
+				t.Errorf("%s offers curve %d, which no Codex route does", account, c)
+			}
+		}
+		if again := codexTLSConfigFor(account); !slices.Equal(again.CipherSuites, config.CipherSuites) ||
+			!slices.Equal(again.CurvePreferences, config.CurvePreferences) {
+			t.Errorf("%s got a different identity the second time", account)
+		}
+	}
+	// the account magpie is signed in to first keeps the profile every
+	// request took before an account could name one
+	base := codexTLSConfig()
+	if !slices.Equal(base.CipherSuites, codexAllCipherSuites) || !slices.Equal(base.CurvePreferences, codexAllCurves) {
+		t.Errorf("magpie's own profile = %v / %v", base.CipherSuites, base.CurvePreferences)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/netproxy"
 )
 
 // The conversation goes in the session headers Codex CLI 0.162 sends,
@@ -525,5 +526,43 @@ func TestCodexClientSetting(t *testing.T) {
 	}
 	if h := sign(); !cli(h) {
 		t.Fatalf("back to the default: %v", h)
+	}
+}
+
+// A saved account of magpie's names itself on the requests it signs, so
+// each takes that account's TLS identity (netproxy.TLSProfile): two
+// accounts of one subscription reach the ChatGPT backend as two clients.
+// Codex's own sign-in names no account and keeps the profile every
+// request took before one could.
+func TestCodexSignNamesTheAccount(t *testing.T) {
+	token := func(context.Context) (string, string, error) { return "tok", "acct", nil }
+	for _, tt := range []struct {
+		account string
+		want    string
+	}{
+		{"", ""},
+		{codexProfileName("codex", "a@example.com"), "codex/a@example.com"},
+		{codexProfileName("codex", "A@Example.com"), "codex/a@example.com"},
+		{codexProfileName("codex", "b@example.com · Team · Acme"), "codex/b@example.com · team · acme"},
+	} {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, CodexBase+"/responses", nil)
+		if err := codexSignFor(tt.account, token)(req.Context(), req, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := netproxy.TLSProfileOf(req.Context()); got != tt.want {
+			t.Errorf("codexSignFor(%q) named %q, want %q", tt.account, got, tt.want)
+		}
+	}
+	// two accounts are two names, and the same account one name
+	if codexProfileName("codex", "a@example.com") == codexProfileName("codex", "b@example.com") {
+		t.Error("two accounts share one name")
+	}
+	// a plain codexSign leaves the context as it was
+	req, _ := http.NewRequestWithContext(netproxy.WithTLSProfile(context.Background(), "codex/a@example.com"), http.MethodPost, CodexBase+"/responses", nil)
+	if err := codexSign(token)(req.Context(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := netproxy.TLSProfileOf(req.Context()); got != "codex/a@example.com" {
+		t.Errorf("codexSign changed the account to %q", got)
 	}
 }
