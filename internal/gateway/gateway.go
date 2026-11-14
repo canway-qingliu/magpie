@@ -914,6 +914,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// and keeps the community's plugins up to date, noting others' updates, and the Bun they run on
 	go plugin.KeepUpdated(ctx)
 	go plugin.KeepBunUpdated(ctx)
+	// and keeps macOS from App Napping the process the agents wait on (#6261)
+	defer awake.NoNap()()
 	// and, when settings say to, keeps the computer awake while agents work
 	go awake.Keep(ctx, func() awake.Level {
 		switch set := settings.Load(); {
@@ -1947,6 +1949,20 @@ func askedAt(id string) (string, string) {
 	return m, e
 }
 
+// namedFor is the catalog id of the model an agent that is given its
+// models' names as their ids asked for by name: WorkBuddy and WorkBuddy AI
+// (buddyIDs in internal/agent), by their keys.
+func namedFor(r *http.Request, model string) (string, bool) {
+	if model == "" {
+		return "", false
+	}
+	switch agent := agentOf(r); agent {
+	case "workbuddy", "workbuddy-ai":
+		return provider.AgentNamed(agent, model)
+	}
+	return "", false
+}
+
 // estimatedMoved are the built-ins that estimated a count, as their
 // plugins do, moved or beside the built-in (kiro-plugin); Command Code's
 // whatever its plan, as the plugin alone knows a Go key.
@@ -2428,9 +2444,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// request is already whole in memory, so keep it as it came, and the
 	// reply goes to a spool as it streams
 	wholeBodies := usage.ObservedBodies() == usage.WholeBodies
+	// WorkBuddy names a model by the name its list shows it under, given
+	// as its id with the provider left out of the names (buddyIDs in
+	// internal/agent): the model of that name, before any other a bare
+	// id would find. The reply keeps the name asked for (askedFor)
+	byName := askedFor
+	if id, ok := namedFor(r, askedFor); ok {
+		body = rewriteModel(body, id)
+		plain = rewriteModel(plain, id)
+		byName = id
+	}
 	// a model asked for at an effort of its own (a Claude Code tier, #536)
 	// is the model, every try of it asked for that effort
-	asked, askedEffort := askedAt(askedFor)
+	asked, askedEffort := askedAt(byName)
 	if askedEffort != "" {
 		body = rewriteModel(body, asked)
 		plain = rewriteModel(plain, asked)
@@ -3583,6 +3609,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			nearDone = nil
 		}
 		c := cands[i]
+		if q, ok := provider.Readdressed(c.p); ok {
+			// a Remote magpie saved at another address since the
+			// request read it is asked there, a retry of it too
+			// (le13ure on X)
+			c.p = q
+		}
 		if handed.release != nil && handed.who != c.who() {
 			handed.release()
 			handed.release = nil
@@ -4938,15 +4970,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			skipped = append(skipped, c.label()+": "+call.Error)
 			again++
-			select {
-			case <-time.After(wait):
+			if pauseUntilReaddressed(r.Context(), wait, readdressedOf([]candidate{c})) {
 				i--
 				continue
-			case <-r.Context().Done():
-				call.Status, call.Error = canceled(r.Context())
-				try.Gone = true
-				s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			}
+			call.Status, call.Error = canceled(r.Context())
+			try.Gone = true
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			break
 		}
 		if !last && hw.failed() && codexReset(hw.code(), hw.errBody()) {
@@ -5230,7 +5260,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 				skipped = append(skipped, c.label()+": "+call.Error)
 				rounds, busyNow = rounds+1, nil
-				if pauseAlive(r.Context(), w, kept, streams, start, wait) {
+				if pauseAlive(r.Context(), w, kept, streams, start, wait, readdressedOf(next)) {
 					cands = append(cands[:i+1:i+1], next...)
 					continue
 				}
@@ -5248,15 +5278,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			skipped = append(skipped, c.label()+": "+call.Error)
 			again++
-			select {
-			case <-time.After(wait):
+			if pauseUntilReaddressed(r.Context(), wait, readdressedOf([]candidate{c})) {
 				i--
 				continue
-			case <-r.Context().Done():
-				call.Status, call.Error = canceled(r.Context())
-				try.Gone = true
-				s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			}
+			call.Status, call.Error = canceled(r.Context())
+			try.Gone = true
+			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
 			break
 		}
 		// (not for one account pinned: the others weren't asked)
@@ -5700,6 +5728,11 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	if relay && searchedForIt(r.Context(), p, from, model, body) && !(from == provider.Responses && (hasSealedAgentMessage(body) || codexAsSent(p, r.Header))) {
 		relay, ownAPI = false, true
 	}
+	// Claude Code's advisor, which magpie runs for a model whose upstream
+	// can't (advisor_serve.go): a relay would leave it out (advisorTools)
+	if relay && advisedHere(p, from, from, model, body, wiresOf(r.Context())) {
+		relay, ownAPI = false, true
+	}
 	// Copilot seals an argument the tools mark "encrypted" (spawn_agent's
 	// message, MultiAgentV2) and then can't open what it sealed: the
 	// subagent's turn came back "Encrypted function output content could
@@ -6056,7 +6089,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		body = s.withoutRefusedThinking(p, body)
 		// and those another vendor signed, to Claude (thinking_bound.go)
 		body = s.withoutForeignThinking(p, body)
-		if isKimi(p, to) || isDeepSeekAnthropic(p, to) || p.IsOpenCode() && strings.Contains(strings.ToLower(modelOf(body)), "deepseek") {
+		if deferredOutUpFront(p, to, body) {
 			// Claude Code's deferred-tool blocks, for which Kimi's
 			// Anthropic endpoint turns the whole request away with a 400
 			// that names nothing to learn from (#2042). DeepSeek's own
@@ -6685,7 +6718,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		toolSeen = clientToolUseIDs(body)
 		body = saltedCallIDsBack(body)
 		// Claude Code's advisor, named by magpie's id (advisor.go)
-		body = advisorTools(body, p, upstream, wiresOf(r.Context()))
+		body = advisorTools(body, p, upstream, wiresOf(r.Context()), keyAllows(r, p))
 		if p.IsBedrock() {
 			// Claude Code's metadata.user_id, a JSON string these days, is
 			// not the plain id Bedrock checks it against (#176)
@@ -9086,11 +9119,18 @@ var cacheControlField = []byte("cache_control")
 // not refused with a 400 the old translation never gave (#3835). Every
 // other request is one bytes.Contains away from this, a scan next to the
 // parse of the same body.
-func parseTranslated(from, to provider.Protocol, body []byte) (*Request, error) {
+func parseTranslated(from, to provider.Protocol, body []byte, advised bool) (*Request, error) {
 	if from == provider.Anthropic && to == provider.Anthropic && bytes.Contains(body, cacheControlField) {
-		if req, err := parseAnthropicRequest(body, true); err == nil {
+		if req, err := readAdvised(body, true, false, advised); err == nil {
 			return afterParse(from, body, req)
 		}
+	}
+	if advised && from == provider.Anthropic {
+		req, err := readAdvised(body, false, false, true)
+		if err != nil {
+			return nil, err
+		}
+		return afterParse(from, body, req)
 	}
 	return parseRequest(from, body, false, to == provider.Responses)
 }
@@ -9103,7 +9143,10 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		msg := "input_image without image_url cannot be translated; send an image_url or use a native Responses route"
 		return writeError(w, from, 400, msg), msg
 	}
-	request, err := parseTranslated(from, to, body)
+	// Claude Code's advisor, run by magpie for a model whose upstream
+	// can't (advisor_serve.go)
+	advised := advisedHere(p, from, to, model, body, wiresOf(r.Context()))
+	request, err := parseTranslated(from, to, body, advised)
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
@@ -9146,16 +9189,17 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if p.OpenCodeFree(model) {
 		zen = &zenReply{z: zenFreeTools(request)}
 	}
-	if request.WebSearch {
-		if !searching(r.Context()) && canSearchFor(p) && (!searchesFor(p, to, model, request) || magpieSearches(r.Context(), p)) {
-			ask := antigravityRound(w, p, s.askTranslated(p, to, model, r.Header, w.Header()))
-			if zen != nil {
-				ask = zenRound(zen.z, ask)
-			}
+	search := request.WebSearch && !searching(r.Context()) && canSearchFor(p) && (!searchesFor(p, to, model, request) || magpieSearches(r.Context(), p))
+	if search || request.Advisor != "" {
+		ask := antigravityRound(w, p, s.askTranslated(p, to, model, r.Header, w.Header()))
+		if zen != nil {
+			ask = zenRound(zen.z, ask)
+		}
+		if search {
 			// a Kimi Code plan's own searches stay on it
 			r = r.WithContext(searchingOn(r.Context(), p))
-			return s.searchReply(w, r, from, p.Name, request, u, ask)
 		}
+		return s.searchReply(w, r, from, p.Name, request, u, ask, search)
 	}
 	if msg := unportableVideo(to, request); msg != "" {
 		// told, not left out for the model to answer the words alone (#6135)
@@ -9409,7 +9453,7 @@ func saysSomething(ev Event) bool {
 	switch ev.Kind {
 	case KText:
 		return ev.Text != ""
-	case KToolStart, KSearch, KImage:
+	case KToolStart, KSearch, KImage, KAdvice:
 		return true
 	}
 	return false

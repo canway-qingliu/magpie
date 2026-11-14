@@ -592,6 +592,11 @@ type Provider struct {
 	// key's card shows it less what magpie priced its calls at since
 	// (see key_balance_own.go).
 	KeyOwnBalances map[string]OwnBalance `json:"keyOwnBalances,omitempty"`
+	// KeyPriceRates is, for a provider of API keys, the price rate of each
+	// key that bills at its own (@tnt12231 on X: one relay, keys in groups
+	// at 0.5× and 1.2×), by its KeyID. A key not in it bills at PriceRate
+	// (see key_rate.go).
+	KeyPriceRates map[string]float64 `json:"keyPriceRates,omitempty"`
 
 	// BalanceURL, when set, is where the vendor tells what is left on a
 	// key, asked with the key the way a chat request carries it; BalancePath
@@ -934,6 +939,8 @@ func store(f file) error {
 	pruneIcons(f)
 	// what agents were handed of the catalog may be out of date now
 	catalog.Touched()
+	// and a request waiting to ask a provider again asks it as saved now
+	editedNow()
 	return nil
 }
 
@@ -997,6 +1004,7 @@ func (p Provider) clone() Provider {
 	p.AccountNames = maps.Clone(p.AccountNames)
 	p.KeySpendCaps = maps.Clone(p.KeySpendCaps)
 	p.KeyOwnBalances = maps.Clone(p.KeyOwnBalances)
+	p.KeyPriceRates = maps.Clone(p.KeyPriceRates)
 	if p.AccountWindowCaps != nil {
 		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
 		for k, v := range p.AccountWindowCaps {
@@ -1861,6 +1869,7 @@ func normalize(p Provider) Provider {
 	p.AccountNames = normalAccountNames(p.AccountNames)
 	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
 	p.KeyOwnBalances = normalKeyOwnBalances(p.KeyOwnBalances)
+	p.KeyPriceRates = normalKeyPriceRates(p.KeyPriceRates)
 	if len(p.Models) > 0 {
 		p.NoModels = false // a pick is no longer Select none
 	}
@@ -2178,7 +2187,7 @@ func (p Provider) Base(proto Protocol) string {
 		if p.IsVertex() {
 			return p.vertexBase()
 		}
-		return p.Gemini
+		return GeminiAsked(p.Gemini)
 	}
 	return ""
 }
@@ -2359,14 +2368,34 @@ func (p Provider) Host() string {
 		return p.Account.wasHost // not plugin://<id>
 	}
 	for pr := range p.speaking {
-		if u := p.Base(pr); u != "" {
-			return HostOf(u)
+		if h, ok := p.baseHost(pr); ok {
+			return h
 		}
 	}
 	if p.Decide != "" {
 		return HostOf(p.Decide)
 	}
 	return ""
+}
+
+// baseHost is HostOf(Base(pr)), and whether Base(pr) is set, without
+// building the base: a Gemini base is asked at GeminiAsked, which parses
+// the saved URL and may add /v1beta, five allocations a look (#6479).
+// Neither the version nor the trimming changes the host, so the saved
+// URL's host is the asked one's.
+func (p Provider) baseHost(pr Protocol) (string, bool) {
+	if pr == Gemini && !p.FactoryGemini() && !p.IsVertex() {
+		// a URL with its scheme and a host: what GeminiAsked trims or adds
+		// is after the host; anything else is left to Base
+		u := strings.TrimSpace(p.Gemini)
+		if i := strings.Index(u, "://"); i > 0 && len(u) > i+3 && u[i+3] != '/' {
+			return HostOf(u), true
+		}
+	}
+	if u := p.Base(pr); u != "" {
+		return HostOf(u), true
+	}
+	return "", false
 }
 
 // Where is what the provider's calls go to, as usage keeps it: the API's

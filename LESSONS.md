@@ -172,7 +172,16 @@ content before you rest an account.**
   moved managedKey onto access.Named, with a test that fails on the old
   check. c83c0d5f (#1112) kept a pinned MAGPIE_ADDR host while sharing, and
   checked that requests behind Tailscale Serve still count as remote.
-- Seen 1× (2026-10-05).
+- 11-13: db9a5ec7c served Claude Code's advisor tool in magpie and asked
+  the advisor model as magpieChose, which drops the key's models list. The
+  caller names that model in the request, so a key held to some models
+  could reach any other model through it. v0.1.4023 and v0.1.4024 shipped
+  it; 0b38eb21c fixed it 23 minutes later, and found that the native
+  advisor had passed any same-provider Claude model upstream for a held key
+  since before. When a request can name a second model (advisor, a
+  sub-agent, a decision model), that model goes through keyAllows like the
+  first. 0b38eb21c ran `-run` gateway tests only, not the full suite.
+- Seen 2× (2026-10-05, 2026-11-13).
 
 **Scope a privacy or security exemption by where the value sits in the
 protocol, never by a key's name.**
@@ -325,6 +334,9 @@ every user.**
 - dccfefdf7 (#2635) made an imported skill follow the app's versioned
   folder. Skills imported before keep the stale link, and only the
   reporter was told to import again.
+- Done right on 11-13: 873a5caa2 (Edward4226, #2961) wrote new launch
+  agents as Standard, and 58ea9cade mended the Background ones already
+  installed the same day.
 - Seen 1× (2026-10-17).
 
 ## The user's own files and settings
@@ -768,6 +780,12 @@ cause:
 - A cancelled run tests nothing. On 10-14 nine pushes in ten minutes
   cancelled each other's runs, and 3c4b4dc97 never had a run of its own;
   its red showed first at 84f14e555.
+  - 11-13: 459d668b3 (#6428) edited docs/sync.html and did not run
+    `node llms-full.mjs`. site's "llms-full.txt is current" test went
+    red at 21:05. Every Test run after it was cancelled by the next
+    push until d5585933f's run finished at ~01:45 with the red. A docs
+    page change runs site/worker.test.mjs, because llms-full.txt is
+    built from those pages (fixed in 3d8860010).
   - 10-28: of main's last 58 Test runs, 49 were cancelled by the next
     push. 0b99b8fbe's new allocation bound went red in macOS's Race job
     (sync.Pool lets go under -race) at 25df3187b, the first run after it
@@ -858,6 +876,12 @@ failure behind it.**
 **Keep the issue open until the reporter's case works. Reopen when they say
 it doesn't.**
 - On #876 the reporter couldn't reopen it themselves and had to file #888.
+- 11-13: #6482 (notarisation 403, "a required agreement is missing")
+  was closed at 08:22 UTC on one green release. The 403 kept coming
+  back between greens, and a notarytool timeout followed, so v0.1.4034,
+  4035, 4036, 4038 and 4042 were tagged and never published, with each
+  mirror-release left waiting. An intermittent fault is closed after a
+  run of releases, not one.
 - Don't close as not-planned what the owner hasn't ruled on. #769 and #871
   were reversed.
 - Done right on 10-07: #1050, #1053, #1063 and #958 shipped a fix and stayed
@@ -1315,6 +1339,32 @@ each one.
     moved into rotfig.js first) and b942a872b +236 ("no page left").
     Five raises on 11-13, +2,145 bytes (ee1553913 +1,112 at 00:11); none moved code out
     of the core beyond its own hook. #2710's growth rate is still unset.
+    Done right the same afternoon: d06d2383a moved the connect-address
+    save and the typed certificate into tlscerts.js and met the budget
+    with no raise, so "no page left" had a page.
+    The afternoon added three more: 6bc0d1e20 +180 and 5a2d0ff47 +81
+    (each moved its feature into a lazy file and kept the import), and
+    287a1ffa2 +225, putting back the Hermes profiles section that
+    1d60b165c had moved out of the core while the Agents rows still drew
+    it. a95a7a1cd +397 (per-key price rates) made nine raises on
+    11-13, +3,028 bytes. A move out of the core
+    first checks every caller of what it moves, or the budget comes back
+    with the code.
+    Again at 5b25d7e9e: +106 bytes into context.js with the core at
+    exactly its budget, tagged v0.1.4040 red; its record ran the
+    Routing GUI files and not the sub-second guard. e4ea31321
+    (v0.1.4043) met the budget with no raise, partly by joining
+    statements onto one line. Joining lines moves nothing out and costs
+    readability; it is a last resort, not the way to meet the budget.
+    The same evening 5211fd3ba (+1,016 lines) "packed" costInYuan to
+    land 3 bytes under it, after 9a8219237 had left 14. Each change now
+    shaves until it fits, and the next one has nothing to shave: move a
+    page out of the core first (#2710).
+    An hour later 23457a51f raised it 316 ("no page to move it to")
+    and left the media chip's Copy model ID out to fit: the budget now
+    shapes what users get. Done right: 817d35ffa then moved ~2.8KB of
+    usage helpers into page.js. The raises live in one ~3KB comment
+    line on coreScriptBudget; that is a log, not a growth rate.
   - A record that points elsewhere: 2f34649a6's body is "Run: see push
     notes", and 8f82e08b4's "(see below)" has nothing below it; neither
     says whether what it ran passed. A pointer is not a record (10-14).
@@ -1324,6 +1374,11 @@ each one.
     lives in the root package, so a run of the changed package never
     reaches it. A new package-level regexp is lazyre.New, and `go test
     .` runs beside the package's own.
+    A third on 11-13: d21cb563e (davsync's setupBody) ran
+    ./internal/gui and ./internal/davsync, and 48e394146 (#6534) fixed
+    it. Six times in this file now, so a line here is not reaching the
+    sessions that add a regexp. A guard that only the root package runs
+    belongs in a check every push runs, or beside each package's tests.
 - **Done right on 10-17.** The retire stack (0f1666b38 to de671719a)
   diffed staticcheck's U1000 against its base for dead code, b98f906b1
   was red on the old code for an own-account gap, and 8 subscriptions
