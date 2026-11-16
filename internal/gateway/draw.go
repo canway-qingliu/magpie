@@ -85,7 +85,7 @@ const maxDrawings = 4
 // ImageGen while it resolves, else AutoDrawer's. None when it is off or no
 // provider draws.
 func drawer() (string, bool) {
-	switch v := settings.Load().ImageGen; v {
+	switch v := settings.Shared().ImageGen; v {
 	case "off":
 		return "", false
 	case "":
@@ -109,7 +109,7 @@ func Drawer() string {
 // when magpie can't find it any more, so that AutoDrawer's draws in its
 // place, as VisionMissing is Image recognition's. "" when none is named,
 // it is off, or it resolves.
-func DrawerMissing() string { return drawerMissing(settings.Load().ImageGen) }
+func DrawerMissing() string { return drawerMissing(settings.Shared().ImageGen) }
 
 // drawerMissing is v, an Image generation pick, when magpie can't draw
 // with it: pickedMissing's, and a routing group ("group/<id>", 7up6666 on
@@ -1347,7 +1347,7 @@ func restDrawer(c candidate, code int, msg string) {
 		// as the reply's headers told it, not quotaRest's guess
 		d, r.By = min(heard.Resets.Sub(now), longestQuota), "resets"
 	}
-	r.Until = now.Add(d)
+	r.Until = onWall(now.Add(d))
 	restingUntil.Lock()
 	restingUntil.m[r.Key] = r.Until
 	restingUntil.note[r.Key] = r
@@ -1563,9 +1563,9 @@ func (t *tracked) Read(p []byte) (int, error) {
 func stalledAt(got []byte, quiet time.Duration) string {
 	where := fmt.Sprintf("%s had come, and nothing more for the last %s", sizeOf(len(got)), quiet.Round(time.Second))
 	switch {
-	case bytes.Contains(got, []byte(`"b64_json"`)):
+	case bodyHas(got, `"b64_json"`):
 		return "it was sending the image itself as b64_json; " + where
-	case bytes.Contains(got, []byte(`"url"`)):
+	case bodyHas(got, `"url"`):
 		return "it was answering with the image's url, not the image; " + where
 	}
 	return "what came doesn't yet say whether the image was coming as a url or as b64_json; " + where
@@ -2148,7 +2148,7 @@ func (s *Server) drawGemini(ctx context.Context, p provider.Provider, model stri
 	}
 	body, _ := json.Marshal(map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}, "generationConfig": cfg})
 	base := strings.TrimSuffix(strings.TrimRight(p.Base(provider.Chat), "/"), "/openai")
-	url := base + "/models/" + model + ":generateContent"
+	url := base + "/models/" + provider.GeminiModelPath(model) + ":generateContent"
 	return s.eachDrawing(d.N, func() (drawn, int, error) {
 		b, code, err := s.send(ctx, p, url, "application/json", body, false)
 		if err != nil {

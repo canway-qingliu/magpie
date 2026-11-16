@@ -197,6 +197,7 @@ var cliForRoute = map[string]string{
 	"POST /api/davsync/{action}":           "magpie webdav",
 	"GET /api/caller-keys":                 "magpie gateway-key list",
 	"POST /api/caller-keys/{action}":       "magpie gateway-key",
+	"GET /api/caller-keys/account-windows": "magpie quota", // the windows `gateway-key limit <id> account` takes
 	"GET /api/account-groups":              "magpie gateway-key groups",
 	"POST /api/account-groups/{action}":    "magpie gateway-key groups",
 	"GET /api/groups":                      "magpie groups",
@@ -217,6 +218,7 @@ var cliForRoute = map[string]string{
 	"GET /api/login/usage":                 "magpie quota",
 	"GET /api/providers":                   "magpie providers",
 	"POST /api/provider/{action}":          "magpie provider",
+	"POST /api/providers/delete":           "magpie provider rm",
 	"GET /api/sessions/reads":              "magpie sessions read",
 	"POST /api/sessions/reads":             "magpie sessions read",
 	"GET /api/sessions":                    "magpie sessions",
@@ -253,6 +255,8 @@ var notYet = map[string]string{
 	"GET /api/appearance/wallpaper":              W,  // appearance.go
 	"POST /api/appearance/wallpaper":             W,  // appearance.go: the picture comes from the window's file picker
 	"GET /api/quit":                              W,  // api.go: the window's Quit question
+	"POST /api/quit/disconnect":                  W,  // api.go: the Quit question's Disconnect and quit, which quits the app
+	"POST /api/page-away":                        W,  // api.go: the page says it went from view, so its caches can go
 	"GET /api/remote":                            W,  // remote.go: another magpie opened in a window of the app
 	"POST /api/remote":                           W,  // remote.go
 	"POST /api/remote/forget":                    W,  // remote.go
@@ -334,6 +338,7 @@ var notYet = map[string]string{
 	"POST /api/settings/update-skip":             S2, // api.go
 	"POST /api/settings/workbuddy-checkin":       S2, // api.go
 	"POST /api/usage/arrange":                    W,  // api.go
+	"POST /api/warm-all":                         A,  // api.go: All accounts warms every account in use (5bd41301b)
 	"POST /api/warm-now":                         A,  // api.go
 	"POST /api/window/{action}":                  W,  // api.go
 	"GET /api/autobackup":                        S2, // backup.go: Back up by itself
@@ -414,6 +419,8 @@ var notYet = map[string]string{
 	"POST /api/library/skills/check":             L,  // library.go
 	"POST /api/library/skills/probe":             L,  // library.go
 	"POST /api/library/plugins/probe":            L,  // library.go
+	"POST /api/library/subagents/probe":          L,  // library.go
+	"POST /api/library/commands/probe":           L,  // library.go
 	"GET /api/memory":                            L,  // memory.go
 	"POST /api/memory":                           L,  // memory.go
 	"POST /api/memory/digest":                    L,  // memory.go
@@ -483,9 +490,16 @@ var notYet = map[string]string{
 	"POST /api/signin/export":                    P,  // providers.go
 	"POST /api/stepfun/{id}/session":             P,  // providers.go
 	"POST /api/stepfun/{id}/signout":             P,  // providers.go
+	"GET /api/qianwen/{id}/signin":               P,  // providers.go
+	"POST /api/qianwen/{id}/signin":              P,  // providers.go
+	"POST /api/qianwen/{id}/signin/cancel":       P,  // providers.go
+	"POST /api/qianwen/{id}/signout":             P,  // providers.go
+	"POST /api/qianfan/{id}/session":             P,  // providers.go
+	"POST /api/qianfan/{id}/signout":             P,  // providers.go
 	"GET /api/speeds":                            U,  // sessions_manage.go: the Sessions row's speed curve
 	"GET /api/sessions/manage":                   U,  // sessions_manage.go
 	"GET /api/sessions/search":                   U,  // sessions_manage.go
+	"GET /api/sessions/said":                     U,  // sessions_manage.go: every agent's sessions; agents have the sessions MCP server
 	"POST /api/sessions/codex-provider":          U,  // sessions_manage.go
 	"POST /api/sessions/delete":                  U,  // sessions_manage.go
 	"POST /api/sessions/purge":                   U,  // sessions_manage.go

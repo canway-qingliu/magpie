@@ -69,7 +69,7 @@ var Choices = map[string][]string{
 	"claudeWarmup":   {"off", "week", "all"},
 	"trayUsageEvery": ints(settings.TrayEvery),
 	"dayStart":       {"0", "1", "2", "3", "4", "5", "6"},
-	"updateChannel":  {settings.UpdateStable},
+	"updateChannel":  {settings.UpdateStable, settings.UpdateDaily},
 	"updateSource":   {settings.UpdateSourceSite, settings.UpdateSourceGitHub},
 	"updateEvery":    ints(settings.UpdateEveries),
 	"searchFirst":    {settings.SearchFirstModel, settings.SearchFirstAPI},
@@ -275,6 +275,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	}
 	in.AgentOrder, in.AgentsHidden, in.AgentsShown, in.AgentsHere = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown, cur.AgentsHere
 	in.Window, in.WindowMaximised, in.WindowAt = cur.Window, cur.WindowMaximised, cur.WindowAt // the window's own, as it was last resized and moved
+	in.OnTop = cur.OnTop                                                                       // and pinned on top, by its title bar's pin (window/ontop)
 	// and what other pages keep here: which models an agent is shown, and
 	// everything the user said of a model anywhere else in the app, set on
 	// its own. The per-model maps are carried whole rather than named one
@@ -315,6 +316,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.Proxies = cur.Proxies                           // set on its own (proxies), the password never sent to the page
 	in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
 	in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
+	in.RequestArchiveMB = cur.RequestArchiveMB         // in settings.json only
 	in.ClaudeRunsMost = cur.ClaudeRunsMost             // magpie claude-code runs, or settings.json (#2956)
 	in.GatewayConversations = cur.GatewayConversations // Sessions' explicit recording consent
 	in.RedactRules = cur.RedactRules                   // the masking rules, set on their own
@@ -355,7 +357,8 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.PlainNames, in.PlainOwnNames = cur.PlainNames, cur.PlainOwnNames
 	in.AgentSuffix = cur.AgentSuffix   // and each agent's own (agent-suffix)
 	in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids)
-	in.BusyLoad = cur.BusyLoad         // and so is this (busy-load)
+	in.BareModelIDsOnly = cur.BareModelIDsOnly
+	in.BusyLoad = cur.BusyLoad // and so is this (busy-load)
 	in.CodexAgentsV1 = cur.CodexAgentsV1
 	in.FullContext = cur.FullContext     // set on its own (full-context)
 	in.CompactAt = cur.CompactAt         // and so is the threshold

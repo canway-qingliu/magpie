@@ -336,7 +336,12 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		}
 		// sub: one of its subagents, found among those the session lists
 		// (#2261)
+		// find: the words a search found in it, so that the part they
+		// are in is among those read (a long session's is cut)
 		read := sessions.TranscriptOf
+		if find := sessions.NeedleOf(q.Get("find")); find != "" {
+			read = func(s sessions.Session) (sessions.Transcript, error) { return sessions.TranscriptAt(s, find) }
+		}
 		if sub := q.Get("sub"); sub != "" {
 			read = func(s sessions.Session) (sessions.Transcript, error) { return sessions.SubagentTranscript(s, sub) }
 		}
@@ -406,7 +411,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		if err := openTerminal(run, s.Title, settings.Load().SessionTerminal); err != nil {
+		if err := openTerminal(run, s.Title, settings.Shared().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -452,7 +457,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no command starts this agent"))
 			return
 		}
-		if err := agentTerminal(run, name, settings.Load().SessionTerminal); err != nil {
+		if err := agentTerminal(run, name, settings.Shared().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -487,7 +492,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		if in.Open {
-			if err := openTerminal(c.Command, s.Title, settings.Load().SessionTerminal); err != nil {
+			if err := openTerminal(c.Command, s.Title, settings.Shared().SessionTerminal); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -858,12 +863,21 @@ func keepStatsWhileAsked() {
 // hands the pages back to the system at once; a range being read again
 // puts it off.
 func forgetIdleStats() {
+	if !letGoStats() {
+		keepStatsWhileAsked()
+		return
+	}
+	debug.FreeOSMemory()
+}
+
+// letGoStats is forgetIdleStats' letting go, which a range being read
+// puts off: it says whether they went.
+func letGoStats() bool {
 	statsMemo.Lock()
 	for _, k := range statsMemo.m {
 		if k.busy {
 			statsMemo.Unlock()
-			keepStatsWhileAsked()
-			return
+			return false
 		}
 	}
 	statsMemo.m = nil
@@ -875,7 +889,7 @@ func forgetIdleStats() {
 	statsTags.m = nil
 	statsTags.Unlock()
 	sessions.ForgetKeptRanges()
-	debug.FreeOSMemory()
+	return true
 }
 
 func combinedSessionStats(days int) sessions.Stats {
@@ -1257,7 +1271,7 @@ func agentCommand(a *agent.Agent) string {
 // the app where one is installed, unless the setting codexOpen asks for the
 // terminal (Yink88564391 on X).
 func codexOpensApp() bool {
-	return settings.Load().CodexOpen != "terminal" && codexAppInstalled()
+	return settings.Shared().CodexOpen != "terminal" && codexAppInstalled()
 }
 
 // codexAppInstalled and codexAppOpener are the agent package's, vars so a

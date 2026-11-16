@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -648,6 +649,10 @@ func (s *signInFlow) finish(out SignInState) bool {
 		s.mu.Lock()
 	}
 	out.ID, out.Agent, out.URL, out.Code, out.Proxy = s.st.ID, s.st.Agent, s.st.URL, s.st.Code, s.st.Proxy
+	// a sign-in's failure is shown, logged and pasted into reports: a
+	// token a vendor's (or a plugin's) error quoted goes out of it here,
+	// where every sign-in ends (QuotedReply)
+	out.Error = redact.Scrub(out.Error)
 	s.st = out
 	stop, srv := s.stop, s.srv
 	s.mu.Unlock()
@@ -833,7 +838,7 @@ func claudeLogin(c claudeCredentials, acct map[string]any) (savedLogin, error) {
 		return savedLogin{}, err
 	}
 	profile, _ := json.Marshal(acct)
-	return savedLogin{Agent: "claude", User: claudeUser(email, c.OAuth.SubscriptionType, acct), Plan: c.OAuth.plan(), Auth: auth, Profile: profile}, nil
+	return savedLogin{Agent: "claude", User: claudeUser(email, c.OAuth.SubscriptionType, acct), Plan: claudeLivePlan(c, "", acct), Auth: auth, Profile: profile}, nil
 }
 
 func codexExchange(ctx context.Context, code, verifier, redirect string) (savedLogin, error) {

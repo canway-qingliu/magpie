@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -30,7 +29,7 @@ import (
 // advisor's model is the client's to name, and the vendor runs it on the
 // user's account, so a key held to some models is held here too.
 func advisorTools(body []byte, p provider.Provider, upstream string, wires map[string]string, allowed func(model string) bool) []byte {
-	if !bytes.Contains(body, []byte(`"advisor_`)) {
+	if !bodyHas(body, `"advisor_`) {
 		return body
 	}
 	tools := gjson.GetBytes(body, "tools")
@@ -149,6 +148,23 @@ func advisorGoneIn(text string) (string, bool) {
 	return text[:i] + advisorGone + trail + text[end:], true
 }
 
+// advisorCut is text without the advisor's instructions, up to the end of
+// the reminder they are in or of the text, and whether it held them: the
+// advisor model is asked with the executor's conversation (adviceFor), and
+// the executor's instructions to call it, or advisorGone in their place,
+// had it answer as the executor that it has no advisor (#6804).
+func advisorCut(text string) (string, bool) {
+	i := strings.Index(text, advisorNote)
+	if i < 0 {
+		return text, false
+	}
+	end := len(text)
+	if j := strings.Index(text[i:], "</system-reminder>"); j >= 0 {
+		end = i + j
+	}
+	return strings.TrimRight(text[:i], " \t\r\n") + text[end:], true
+}
+
 // withoutAdvisor is a Messages request's messages without what Claude Code
 // put there for an advisor tool that is left out, named in gone: the
 // tool_addition (or tool_removal, tool_reference) naming it, and a message
@@ -158,7 +174,7 @@ func advisorGoneIn(text string) (string, bool) {
 // tools, which Claude Code answers "No such tool available: advisor"
 // (JackChou on Discord).
 func withoutAdvisor(raw json.RawMessage, gone map[string]bool) (json.RawMessage, bool) {
-	if len(gone) == 0 || !bytes.Contains(raw, []byte("dvisor")) {
+	if len(gone) == 0 || !bodyHas(raw, "dvisor") {
 		return raw, false
 	}
 	var msgs []map[string]json.RawMessage

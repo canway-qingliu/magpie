@@ -225,6 +225,20 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 							msg.Parts = append(msg.Parts, v)
 						}
 					}
+				case "document":
+					// a PDF, say, as the client sent it: dropped whole
+					// before, it reached the model only when the request
+					// was relayed as sent (#5452). A text source carries
+					// the document's words, not base64: they go as text
+					switch {
+					case b.Source == nil:
+					case b.Source.Type == "text":
+						msg.Parts = append(msg.Parts, Part{Kind: Text, Text: b.Source.Data, block: true})
+					case b.Source.Type == "base64" && b.Source.Data != "":
+						msg.Parts = append(msg.Parts, Part{Kind: File, MediaType: b.Source.MediaType, Data: b.Source.Data, block: true})
+					case b.Source.URL != "":
+						msg.Parts = append(msg.Parts, Part{Kind: File, MediaType: b.Source.MediaType, URL: b.Source.URL, block: true})
+					}
 				case "tool_use":
 					msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: anthropicInID(b.ID), Name: b.Name, Args: b.Input, block: true})
 				case "tool_result":
@@ -232,8 +246,8 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 						msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID)})
 						break
 					}
-					out, images := toolOutput(b.Content)
-					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID), Text: out, Images: images, IsError: b.IsError, Loads: toolRefs(b.Content), block: true})
+					out, images, audio := toolOutput(b.Content)
+					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: anthropicInID(b.ToolUseID), Text: out, Images: images, Audio: audio, IsError: b.IsError, Loads: toolRefs(b.Content), block: true})
 				case "thinking":
 					msg.Parts = append(msg.Parts, Part{Kind: Thinking, Text: b.Thinking, Signature: b.Signature, block: true})
 				case "server_tool_use":
@@ -345,7 +359,7 @@ func readAdvised(body []byte, clientMarks, facts, advised bool) (*Request, error
 // turnEffort is the last effort a message of an Anthropic request carries
 // in its own output_config; "" when none does.
 func turnEffort(body []byte) string {
-	if !bytes.Contains(body, []byte(`"output_config"`)) {
+	if !bodyHas(body, `"output_config"`) {
 		return ""
 	}
 	last := ""
@@ -404,7 +418,7 @@ func anthropicReplaysThinking(host, model string) bool {
 // group that falls from Claude to DeepSeek sends both (#1611). Every other
 // message, and a body with nothing to change, goes byte for byte.
 func withThinkingOnToolTurns(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"tool_use"`)) && !bytes.Contains(body, []byte(`"redacted_thinking"`)) {
+	if !bodyHas(body, `"tool_use"`) && !bodyHas(body, `"redacted_thinking"`) {
 		return body
 	}
 	var q map[string]json.RawMessage
@@ -1015,7 +1029,19 @@ func anthropicBody(r *Request, model, host string, replay bool) []byte {
 					rest = append(rest, b)
 					break
 				}
-				rest = append(rest, aBlock{Type: "text", Text: attachmentText(p)})
+				if p.MediaType == "application/pdf" && p.Data != "" {
+					// the file itself, in Messages' own tongue (#5452): a
+					// base64 document takes a PDF only, so any other file
+					// is still told of rather than turned away with a 400
+					rest = append(rest, aBlock{Type: "document", Source: &struct {
+						Type      string `json:"type"`
+						MediaType string `json:"media_type,omitempty"`
+						Data      string `json:"data,omitempty"`
+						URL       string `json:"url,omitempty"`
+					}{Type: "base64", MediaType: p.MediaType, Data: p.Data}})
+				} else {
+					rest = append(rest, aBlock{Type: "text", Text: attachmentText(p)})
+				}
 			case Image:
 				b := imageBlock(p)
 				b.CacheControl = partMark(p.cache)
@@ -2007,7 +2033,7 @@ func newID() string {
 // to every request offering it (#646). A schema that has none is sent as
 // it came.
 func objectSchema(schema json.RawMessage) json.RawMessage {
-	if !bytes.Contains(schema, []byte(`Of"`)) {
+	if !bodyHas(schema, `Of"`) {
 		return schema
 	}
 	var m map[string]any

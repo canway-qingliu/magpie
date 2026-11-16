@@ -1949,11 +1949,16 @@ func (p Provider) PicksOf(avail []catalog.Model) []string {
 // released up to the newest of them, and a model released after it is the
 // new one. A provider of keys has no such rule: its picks without
 // PickedFrom are served as they are (yuancjun: one old model picked of a
-// relay's ten served all ten).
+// relay's ten served all ten). A remote magpie's routing group made
+// there since is served beside any picks: picking some of its models
+// isn't leaving out the groups its user goes on making, and each one hid
+// until ticked by hand (KoiLx0 on X: office/group/opus missing from the
+// agents' picker). A group listed at Save and left unpicked stays out.
 func (p Provider) withNewlyListed(picks []string, avail []catalog.Model) []string {
 	if len(avail) == 0 {
 		return picks
 	}
+	remote := p.IsRemoteMagpie()
 	picked := make(map[string]bool, len(picks))
 	for _, id := range picks {
 		picked[id] = true
@@ -1985,15 +1990,23 @@ func (p Provider) withNewlyListed(picks []string, avail []catalog.Model) []strin
 		}
 		isNew = func(m catalog.Model) bool { return m.Released > newest }
 	}
-	var added []string
+	var added, groups []string
+	partial := false
 	for _, m := range avail {
 		if picked[m.ID] {
 			continue
 		}
 		if !isNew(m) {
-			return picks // one the user saw and left unpicked
+			partial = true // one the user saw and left unpicked
+			continue
 		}
 		added = append(added, m.ID)
+		if remote && strings.HasPrefix(m.ID, GroupPrefix) {
+			groups = append(groups, m.ID)
+		}
+	}
+	if partial {
+		added = groups
 	}
 	if len(added) == 0 {
 		return picks
@@ -2409,6 +2422,9 @@ func (p Provider) listPriceIn(c priceCats, model string) (catalog.Price, bool, i
 	if pr, ok := p.remotePrice(model); ok {
 		return pr, true, pricedOwn
 	}
+	if pr, ok := p.copilotListPrice(model); ok {
+		return pr, true, pricedOwn
+	}
 	if p.clineFreeModel(model) || p.kiloFreeModel(model) || p.codexReviewFree(model) {
 		// served at no cost: not at the price of the model it is free of
 		return catalog.Price{}, true, pricedOwn
@@ -2451,6 +2467,9 @@ func (p Provider) listPriceIn(c priceCats, model string) (catalog.Price, bool, i
 	}
 	if p.pluginFree(model) {
 		return catalog.Price{}, true, pricedOwn
+	}
+	if f, ok := mythosFable(model); ok {
+		return p.listPriceIn(c, f)
 	}
 	return catalog.Price{}, false, pricedOwn
 }
@@ -2780,6 +2799,9 @@ func MakerPrice(model string) (catalog.Price, bool) {
 		if pr, ok := makerListPrice(m); ok {
 			return pr, true
 		}
+	}
+	if f, ok := mythosFable(model); ok {
+		return MakerPrice(f)
 	}
 	return catalog.Price{}, false
 }
@@ -3222,6 +3244,8 @@ var modelWindow = lazyre.New(`^([^@]+)@[0-9]+[km]$`)
 // grok-4.7-mini, grok-4.7-fast); a Cursor account's fast ids are priced at
 // Cursor's own fast rate (Provider.cursorFastPrice), and a Grok account's
 // grok-4.7-build-fast at twice grok-4.7's (Provider.grokFastPrice).
+// Antigravity's Orchestrator ids are priced as the Gemini model each one
+// is (antigravityRoles).
 func pricedNames(model string) []string { return pricedNamesTo(nil, model) }
 
 // pricedNamesTo is pricedNames appended to dst.
@@ -3248,7 +3272,105 @@ func pricedNamesTo(dst []string, model string) []string {
 	if base, ok := effortBase(l); ok {
 		out = append(out, base)
 	}
+	if base, ok := geminiTrialBase(l); ok {
+		out = append(out, base)
+		if b, ok := effortBase(base); ok {
+			out = append(out, b)
+		}
+	}
+	if m, ok := antigravityRole(l); ok {
+		out = append(out, m)
+	}
 	return out
+}
+
+// geminiTrialBase is the Gemini model the lower-cased id l is the trial
+// access of (ownsh1p on X: Usage showed gemini-4-argon-trial with tokens and
+// no cost): the id without its -trial, at an effort after it too
+// (gemini-4-argon-trial-high). Google's Antigravity models page
+// (https://antigravity.google/docs/models/, read 2026-11-16) gives Gemini 4
+// Argon to "paid Google AI Pro plans or on trial with eligible premium
+// devices": the same model, reached on a trial, so its calls are estimated
+// at the model's list price as a paid plan's are. Only a gemini- id: a
+// -trial of another vendor's (ZCode's glm-5.3-trial, grok-4.7-trial) is
+// that vendor's own offer and keeps no price it doesn't list.
+func geminiTrialBase(l string) (string, bool) {
+	if !strings.Contains(l, "-trial") {
+		return "", false // every model of every provider's list is priced on each poll
+	}
+	last := l[strings.LastIndexByte(l, '/')+1:]
+	if !strings.HasPrefix(last, "gemini-") {
+		return "", false
+	}
+	if base, ok := strings.CutSuffix(l, "-trial"); ok {
+		return base, true
+	}
+	i := strings.LastIndexByte(l, '-')
+	switch l[i+1:] {
+	case "minimal", "low", "medium", "high", "xhigh":
+		if base, ok := strings.CutSuffix(l[:i], "-trial"); ok {
+			return base + l[i:], true
+		}
+	}
+	return "", false
+}
+
+// antigravityRoles are the ids Antigravity's Orchestrator mode records its
+// calls under, by the Gemini model each one is. Antigravity's docs
+// (https://antigravity.google/docs/models/, read 2026-11-15): "Orchestrator
+// (Carbon) always plans with Gemini 4 Carbon, and Orchestrator (Argon)
+// always plans with Gemini 4 Argon", and "the fast, lightweight Gemini 4
+// Hydrogen does the implementation work". The ids are the app's own
+// (guyng35955 on X: Usage showed gemini-pro-orchestrator-argon,
+// gemini-pro-orchestrator-carbon and the worker gemini-flash-worker-agy
+// with no cost). gemini-pro-orchestrator is Orchestrator (Carbon)'s id
+// before Argon's came (MODEL_PLACEHOLDER_M667 in the Antigravity Context
+// Window Monitor extension 1.17.1, beside M681 for -argon and the shared
+// worker M669). Only these ids: no other name is read as one of them.
+var antigravityRoles = map[string]string{
+	"gemini-pro-orchestrator":        "gemini-4-carbon",
+	"gemini-pro-orchestrator-carbon": "gemini-4-carbon",
+	"gemini-pro-orchestrator-argon":  "gemini-4-argon",
+	"gemini-flash-worker-agy":        "gemini-4-hydrogen",
+}
+
+// antigravityRole is the Gemini model the lower-cased id l is the
+// Orchestrator mode role of (antigravityRoles), under a google/ or other
+// route's prefix too, and at an effort (-high).
+func antigravityRole(l string) (string, bool) {
+	if !strings.Contains(l, "orchestrator") && !strings.Contains(l, "worker-agy") {
+		return "", false // every model of every provider's list is priced on each poll
+	}
+	l = l[strings.LastIndexByte(l, '/')+1:]
+	if m, ok := antigravityRoles[l]; ok {
+		return m, true
+	}
+	if i := strings.LastIndexByte(l, '-'); i > 0 {
+		switch l[i+1:] {
+		case "minimal", "low", "medium", "high", "xhigh":
+			base := strings.TrimSuffix(l[:i], "-extra")
+			if m, ok := antigravityRoles[base]; ok {
+				return m, true
+			}
+		}
+	}
+	return "", false
+}
+
+// mythosFable is the Fable of a Mythos id's version (claude-mythos-5.2 ->
+// claude-fable-5.2), the price of a Mythos nothing prices
+// (shangyuan0818 on X): Anthropic gives Mythos 5.1 Fable 5.1's per-token
+// pricing and Mythos 5 Fable 5's, and models.dev's azure lists
+// claude-mythos-5 at claude-fable-5's. It is the last place looked, so a
+// price for the Mythos itself (a catalog's, what Anthropic told Claude
+// Code, a plugin's) always comes first.
+func mythosFable(model string) (string, bool) {
+	l := strings.ToLower(strings.TrimSpace(model))
+	i := strings.Index(l, "claude-mythos-")
+	if i < 0 {
+		return "", false
+	}
+	return l[:i] + "claude-fable-" + l[i+len("claude-mythos-"):], true
 }
 
 // PricedName is the catalog ID used for a list-price estimate. Prefer a
@@ -3258,6 +3380,11 @@ func PricedName(model string) string {
 	for _, name := range n {
 		if _, ok := makerListPrice(name); ok {
 			return name
+		}
+	}
+	if f, ok := mythosFable(model); ok {
+		if _, ok := MakerPrice(f); ok {
+			return PricedName(f)
 		}
 	}
 	return n[len(n)-1]
@@ -3625,6 +3752,19 @@ func entriesOf(of func(Provider) bool, off func(pid, model string) bool) []Entry
 	return out
 }
 
+// InputsOf is what a model takes: what its source listed, else, when its
+// source said nothing of its input, what models.dev says the model takes
+// wherever it is served, as images are read (catalog.SeesImages). A Gemini
+// model a list gave bare (Vertex AI's, a relay's) was said to take text
+// and image alone, never its audio (Parlevent_ on X). The list may be
+// shared: the caller only reads it.
+func InputsOf(m catalog.Model) []string {
+	if m.InputModalities != nil || m.ImageInput != nil {
+		return m.InputModalities
+	}
+	return catalog.InputsOf(m.ID)
+}
+
 // entryFor is one of a provider's models as the catalog carries it: the
 // window and the reply limit a request on it is routed and metered against,
 // with what the user set taken over the vendor's list and models.dev.
@@ -3650,7 +3790,7 @@ func sharedEntry(p *Provider, m catalog.Model, s settings.Settings) Entry {
 	name := cmp.Or(m.Name, m.ID)
 	e := Entry{ID: p.ID + "/" + m.ID, Model: m.ID, Family: p.Family, Name: name, Efforts: effortsOf(m), Provider: p,
 		Images: images, ImageInput: imageInput, Context: ctx, WindowSet: p.ContextOf(m.ID) > 0, MaxContext: m.MaxContext, Output: output, OutputSet: outputOf(s, p.ID, m.ID) > 0, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Tiers: m.Tiers, Released: m.Released,
-		Inputs: m.InputModalities, Outputs: m.OutputModalities, Codex: m.Codex,
+		Inputs: InputsOf(m), Outputs: m.OutputModalities, Codex: m.Codex,
 		AlwaysThinks: m.AlwaysThinks, DynamicTools: m.DynamicTools, DefaultEffort: m.DefaultEffort}
 	if lv, ok := catalog.CodexLevels(m.Codex); ok {
 		// the levels the vendor lists the model at in Codex's shape are
@@ -4189,7 +4329,7 @@ func outputKeyOf(id string) (string, error) {
 		return "", errorf("name a model as provider/model, not %q", id)
 	}
 	key := pid + "/" + model
-	if _, under := settings.Load().ModelOutputs[key]; under {
+	if _, under := settings.Shared().ModelOutputs[key]; under {
 		return key, nil
 	}
 	if p, ok := byIDOrWas(pid); ok {

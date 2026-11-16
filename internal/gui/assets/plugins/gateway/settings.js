@@ -82,12 +82,16 @@ function renderPort(s) {
 // renderBareIds: Model ids without the provider (settings.bareModelIDs,
 // love1sbug on X, moving from CLIProxyAPI): the gateway's /v1/models
 // lists each model by its own id as well, gpt-5.6-sol beside
-// codex/gpt-5.6-sol. Posted on its own; off by default.
+// codex/gpt-5.6-sol. Only lists it by that id alone, in place of the
+// provider/model ids it stands for (settings.bareModelIDsOnly, qQianye on
+// X: a Docker magpie's client listed every model twice, and a gateway has
+// no Agents page to pick models on). Posted on its own; off by default.
 function renderBareIds(s) {
   renderBusyLoad(s); // Models › Routing's row
   renderContextCap(s);
-  $("#bareIdsSegs").replaceChildren(segs([[false, t("Off")], [true, t("On")]], !!s.bareModelIDs, (on) =>
-    writingPrefs(api("settings/bare-ids", { on })).then((ns) => { prefs = state.settings = ns; renderSettings(); })
+  const now = !s.bareModelIDs ? "off" : s.bareModelIDsOnly ? "only" : "on";
+  $("#bareIdsSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")], ["only", t("Only")]], now, (v) =>
+    writingPrefs(api("settings/bare-ids", { on: v !== "off", only: v === "only" })).then((ns) => { prefs = state.settings = ns; renderSettings(); })
       .catch((e) => { status(t(e.message), "err"); renderSettings(); })));
 }
 
@@ -413,7 +417,10 @@ function httpsSays(m) {
 function renderHTTPS(s, asked) {
   const box = $("#httpsList");
   if (!box) return;
-  if (!asked) api("settings/https").then((h) => { httpsState = h; renderHTTPS(prefs, true); }).catch(() => {});
+  // asked while the rows can show, and again once the saved switch moves
+  // from what it said: every Settings draw asking cost a request a draw,
+  // and a page's write counts read it as a write (#6709)
+  if (!asked && s && (s.lan || s.onNetwork || s.https) && (!httpsState || !httpsState.on !== !s.https)) api("settings/https").then((h) => { httpsState = h; renderHTTPS(prefs, true); }).catch(() => {});
   const h = httpsState;
   if (!s || !h || (!s.lan && !s.onNetwork && !h.on)) return void box.replaceChildren();
   const post = (what, body) => writingPrefs(api("settings/https" + what, body))
