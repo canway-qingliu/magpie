@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/netproxy"
 )
 
 // The conversation goes in the session headers Codex CLI 0.162 sends,
@@ -63,6 +66,69 @@ func TestCodexSignSessionHeaders(t *testing.T) {
 		`{"type":"message","role":"user","content":[{"type":"input_text","text":"and the test?"}]}`)
 	if first == "" || first != next {
 		t.Fatalf("sessions %q and %q", first, next)
+	}
+}
+
+// A request that came from a Codex client keeps that client's own
+// User-Agent: nothing of it is changed but the version in it, which is
+// never older than the version the request is signed as (the backend
+// serves a model only to a client new enough for it). A request from
+// anyone else is named as Codex.
+func TestCodexSignKeepsTheClientsUserAgent(t *testing.T) {
+	signIn(t)
+	old := codexExecutable
+	codexExecutable = func() string { return "" }
+	codexSeen = seenVersion{}
+	codexVersionCache.at = time.Time{}
+	t.Cleanup(func() { codexExecutable = old; codexSeen = seenVersion{}; codexVersionCache.at = time.Time{} })
+	p, _ := find(All(), "codex")
+	for _, tt := range []struct {
+		name    string
+		ua      string
+		version string
+		want    string
+	}{
+		{
+			name: "a Codex CLI",
+			ua:   "codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+			want: "codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+		},
+		{
+			name: "a Codex desktop app",
+			ua:   "Codex Desktop/0.162.3 (Windows 10.0.26100; x86_64) unknown",
+			want: "Codex Desktop/0.162.3 (Windows 10.0.26100; x86_64) unknown",
+		},
+		{
+			name:    "an older Codex CLI",
+			ua:      "codex_cli_rs/0.150.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+			version: "0.170.0",
+			want:    "codex_cli_rs/0.170.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0",
+		},
+		{
+			name: "another app",
+			ua:   "PrivateEditor/8.2",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+			req.Header.Set("User-Agent", tt.ua)
+			if tt.version != "" {
+				req.Header.Set("version", tt.version)
+			}
+			if err := p.Sign(context.Background(), req, Responses, []byte(`{}`)); err != nil {
+				t.Fatal(err)
+			}
+			got := req.Header.Get("User-Agent")
+			if tt.want == "" {
+				if !strings.HasPrefix(got, "codex_cli_rs/") {
+					t.Errorf("User-Agent = %q, want Codex's own", got)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Errorf("User-Agent = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -148,6 +214,43 @@ func TestCodexBodyAsCodexSendsIt(t *testing.T) {
 	json.Unmarshal(out, &m)
 	if m.Instructions != "You are Codex, a coding agent.\nPersonality." || len(m.Input) != 0 {
 		t.Fatalf("%s", out)
+	}
+}
+
+// A Responses Lite turn, as Codex 0.165 sends it (its system prompt as
+// developer items, its tools in an additional_tools item, no instructions),
+// goes without instructions and without a reasoning summary it didn't ask
+// for, as Codex itself sends it to chatgpt.com.
+func TestCodexBodyLiteGetsNoInstructions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	os.WriteFile(filepath.Join(dir, "models_cache.json"), []byte(`{"models":[{"slug":"gpt-6-astra","model_messages":{"instructions_template":"You are Codex, a coding agent.\n{{ personality }}"}}]}`), 0o644)
+	for name, body := range map[string]string{
+		"additional_tools": `{"model":"gpt-6-astra","reasoning":{"effort":"high"},"input":[
+		  {"type":"additional_tools","tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}]},
+		  {"type":"message","role":"developer","content":[{"type":"input_text","text":"You are Codex, a coding agent."}]},
+		  {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`,
+		"all_turns": `{"model":"gpt-6-astra","reasoning":{"effort":"high","context":"all_turns"},"input":[
+		  {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`,
+	} {
+		var m map[string]any
+		out := codexBody([]byte(body))
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := m["instructions"]; ok {
+			t.Errorf("%s: instructions added: %s", name, out)
+		}
+		if _, ok := m["reasoning"].(map[string]any)["summary"]; ok {
+			t.Errorf("%s: summary added: %s", name, out)
+		}
+	}
+	// a request that isn't Lite still gets Codex's
+	var m map[string]any
+	json.Unmarshal(codexBody([]byte(`{"model":"gpt-6-astra","reasoning":{"effort":"high"},"input":"hi"}`)), &m)
+	if m["instructions"] != "You are Codex, a coding agent.\n{{ personality }}" || m["reasoning"].(map[string]any)["summary"] != "auto" {
+		t.Fatalf("%v", m)
 	}
 }
 
@@ -406,5 +509,97 @@ func TestCodexInputDropsStatusWithID(t *testing.T) {
 		if has != want[i] {
 			t.Errorf("input[%d] status kept %v, want %v: %v", i, has, want[i], item)
 		}
+	}
+}
+
+// The Codex client magpie presents is the user's choice (ouhthuo on X): Codex
+// CLI unless "desktop" is set, and then the Codex app's originator and
+// User-Agent on a model request and on the account calls alike (/wham, the
+// token refresh), and as a test is asked as Codex asks. Anything else is
+// refused, and read as Codex CLI from a file edited by hand.
+func TestCodexClientSetting(t *testing.T) {
+	signIn(t)
+	p, _ := find(All(), "codex")
+	sign := func() http.Header {
+		t.Helper()
+		req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+		if err := p.Sign(context.Background(), req, Responses, []byte(`{"prompt_cache_key":"thread-1"}`)); err != nil {
+			t.Fatal(err)
+		}
+		return req.Header
+	}
+	cli := func(h http.Header) bool {
+		return h.Get("originator") == "codex_cli_rs" && strings.HasPrefix(h.Get("User-Agent"), "codex_cli_rs/0.")
+	}
+	if h := sign(); !cli(h) {
+		t.Fatalf("by default: %v", h)
+	}
+	for _, bad := range []string{"Codex Desktop", "codex_cli_rs", "evil", "desktop2"} {
+		if err := SetCodexClient(bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+	if err := SetCodexClient("desktop"); err != nil {
+		t.Fatal(err)
+	}
+	h := sign()
+	if h.Get("originator") != "Codex Desktop" || !regexp.MustCompile(`^Codex Desktop/0\.\d+[^ ]* \([^;]+; [^)]+\) unknown \(Codex Desktop; \d+\.\d+\.\d+\)$`).MatchString(h.Get("User-Agent")) {
+		t.Fatalf("as the Codex app: %v", h)
+	}
+	if h.Get("version") == "" || h.Get("session-id") != "thread-1" || h.Get("chatgpt-account-id") != "acct-1" {
+		t.Fatalf("the rest of the headers: %v", h)
+	}
+	acct := codexAccountHeaders("acct-1")
+	if acct["Originator"] != "Codex Desktop" || !strings.HasPrefix(acct["User-Agent"], "Codex Desktop/") {
+		t.Fatalf("an account call: %v", acct)
+	}
+	asked := http.Header{}
+	clientHeaders(ClientCodex, asked)
+	if asked.Get("originator") != "Codex Desktop" || !strings.HasPrefix(asked.Get("User-Agent"), "Codex Desktop/") {
+		t.Fatalf("a test asked as Codex: %v", asked)
+	}
+	if err := SetCodexClient(""); err != nil {
+		t.Fatal(err)
+	}
+	if h := sign(); !cli(h) {
+		t.Fatalf("back to the default: %v", h)
+	}
+}
+
+// A saved account of magpie's names itself on the requests it signs, so
+// each takes that account's TLS identity (netproxy.TLSProfile): two
+// accounts of one subscription reach the ChatGPT backend as two clients.
+// Codex's own sign-in names no account and keeps the profile every
+// request took before one could.
+func TestCodexSignNamesTheAccount(t *testing.T) {
+	token := func(context.Context) (string, string, error) { return "tok", "acct", nil }
+	for _, tt := range []struct {
+		account string
+		want    string
+	}{
+		{"", ""},
+		{codexProfileName("codex", "a@example.com"), "codex/a@example.com"},
+		{codexProfileName("codex", "A@Example.com"), "codex/a@example.com"},
+		{codexProfileName("codex", "b@example.com · Team · Acme"), "codex/b@example.com · team · acme"},
+	} {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, CodexBase+"/responses", nil)
+		if err := codexSignFor(tt.account, token)(req.Context(), req, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := netproxy.TLSProfileOf(req.Context()); got != tt.want {
+			t.Errorf("codexSignFor(%q) named %q, want %q", tt.account, got, tt.want)
+		}
+	}
+	// two accounts are two names, and the same account one name
+	if codexProfileName("codex", "a@example.com") == codexProfileName("codex", "b@example.com") {
+		t.Error("two accounts share one name")
+	}
+	// a plain codexSign leaves the context as it was
+	req, _ := http.NewRequestWithContext(netproxy.WithTLSProfile(context.Background(), "codex/a@example.com"), http.MethodPost, CodexBase+"/responses", nil)
+	if err := codexSign(token)(req.Context(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := netproxy.TLSProfileOf(req.Context()); got != "codex/a@example.com" {
+		t.Errorf("codexSign changed the account to %q", got)
 	}
 }

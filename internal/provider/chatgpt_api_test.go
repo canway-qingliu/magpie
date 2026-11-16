@@ -24,7 +24,8 @@ type fakeOpenAI struct {
 	api      *httptest.Server
 	forms    []url.Values // what the token endpoint was sent
 	revoked  []url.Values
-	nonce    string // the ID token's
+	uas      []string // the User-Agent of every call, in the order they came
+	nonce    string   // the ID token's
 	scope    string
 	noID     bool
 	refuse   string // a refresh refused with this OAuth code
@@ -36,6 +37,9 @@ func newFakeOpenAI(t *testing.T) *fakeOpenAI {
 	f := &fakeOpenAI{t: t, scope: "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"}
 	f.auth = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		f.mu.Lock()
+		f.uas = append(f.uas, r.UserAgent())
+		f.mu.Unlock()
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			json.NewEncoder(w).Encode(map[string]any{"issuer": f.auth.URL, "revocation_endpoint": f.auth.URL + "/oauth/revoke"})
@@ -71,6 +75,9 @@ func newFakeOpenAI(t *testing.T) *fakeOpenAI {
 		}
 	}))
 	f.api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.uas = append(f.uas, r.UserAgent())
+		f.mu.Unlock()
 		if r.URL.Path == "/v1/models" {
 			f.mu.Lock()
 			f.modelsOf = r.Header.Get("Authorization")
@@ -98,6 +105,14 @@ func (f *fakeOpenAI) lastForm() url.Values {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.forms[len(f.forms)-1]
+}
+
+// userAgents is the User-Agent of every call the fake OpenAI took, in the
+// order they came.
+func (f *fakeOpenAI) userAgents() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.uas...)
 }
 
 // signInVia runs a sign-in to its callback, which OpenAI sends with the
@@ -477,5 +492,42 @@ func TestChatGPTAPIUsageSaysWhere(t *testing.T) {
 	}
 	if len(f.forms) != n {
 		t.Errorf("OpenAI was asked %d times for it", len(f.forms)-n)
+	}
+}
+
+// Every call magpie makes to OpenAI about a ChatGPT account goes with
+// magpie's own name: the code trade, the model's list, the revocation.
+// They went with Go's "Go-http-client/1.1", which says what magpie is
+// written in and tells a vendor nothing it needs. This path is another
+// client than Codex (a ChatGPT plan used through OpenAI's own API, not
+// Codex CLI on ChatGPT's backend), so it wears no Codex name either.
+func TestChatGPTAPICallsGoAsMagpie(t *testing.T) {
+	claudeHome(t)
+	f := newFakeOpenAI(t)
+	if st := signInVia(t, f, "oaiapp_1", same); st.State != "done" {
+		t.Fatalf("sign-in %+v", st)
+	}
+	p, ok := siwcAccount()
+	if !ok {
+		t.Fatal("no account")
+	}
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := siwcLookup("me@example.com")
+	if !ok {
+		t.Fatal("no creds to revoke")
+	}
+	if err := siwcRevoke(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	uas := f.userAgents()
+	if len(uas) < 4 {
+		t.Fatalf("only %d calls went to OpenAI: %v", len(uas), uas)
+	}
+	for _, ua := range uas {
+		if ua != "magpie" {
+			t.Errorf("a call to OpenAI went with User-Agent %q, want %q", ua, "magpie")
+		}
 	}
 }

@@ -41,7 +41,7 @@ func FactoryBaseForTest(api, eu string) func() {
 }
 
 var (
-	factoryClient = &http.Client{Timeout: 30 * time.Second}
+	factoryClient = namedClient(&http.Client{Timeout: 30 * time.Second})
 	// factoryMu holds the accounts still while the mover reads them
 	factoryMu sync.Mutex
 )

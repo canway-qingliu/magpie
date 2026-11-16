@@ -11,10 +11,43 @@ import (
 // magpieUA is the User-Agent magpie's requests go to a vendor with.
 func magpieUA() string { return "magpie/" + Version }
 
+// namedUA is a transport that gives a request magpie's own User-Agent
+// when the request carries none: Go's own default ("Go-http-client/1.1")
+// says what magpie is written in, and a request that goes out with no
+// User-Agent of its own goes with it.
+//
+// A request that names a client of its own keeps that name: the agent's
+// (userAgentFor), a vendor's own client (the Copilot CLI's), or magpie's
+// own router.
+//
+// Go's writer adds its default only when the canonical name is free, so
+// magpie's name goes on that one: a request carrying a User-Agent under
+// another name keeps it and gets magpie's beside it, never Go's default.
+type namedUA struct{ next http.RoundTripper }
+
+func (t namedUA) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		// a copy, as a RoundTripper leaves its caller's request as it was
+		r := req.Clone(req.Context())
+		r.Header.Set("User-Agent", magpieUA())
+		req = r
+	}
+	return t.next.RoundTrip(req)
+}
+
+// CloseIdleConnections closes next's, where it keeps any: the wrapper
+// would otherwise hide the transport's own.
+func (t namedUA) CloseIdleConnections() {
+	if c, ok := t.next.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
+
 // userAgentFor is the User-Agent a request to p goes with, ua being the
 // one the request came to magpie with: the agent's own, as it sent it,
-// where p is set to pass it on (provider.PassesUserAgent, #1851), and
-// magpie's where it isn't, where the agent sent none, and on magpie's own
+// where p passes it on (provider.PassesUserAgent: a key+URL provider not
+// set to go as magpie, #1851), and magpie's where it doesn't, where the
+// agent sent none, and on magpie's own
 // requests — its classifier's, vision's, search's, the image tool's
 // (magpiesOwn) — which no agent sent. A User-Agent the user set among the
 // provider's headers is put on after, when the request is signed, and
@@ -36,7 +69,7 @@ func magpiesOwn(ua string) bool {
 }
 
 // callerUA is the User-Agent the request ctx is for came with (withCaller),
-// "" when there is none.
+// or the agent's another magpie passed it on for; "" when there is none.
 func callerUA(ctx context.Context) string {
 	c, _ := ctx.Value(callerCtx{}).(caller)
 	return c.ua
@@ -52,4 +85,27 @@ func stampUA(ctx context.Context, p provider.Provider, h http.Header) {
 		return
 	}
 	h.Set("User-Agent", userAgentFor(p, callerUA(ctx)))
+}
+
+// agentUA is the User-Agent of the agent a request with headers in is
+// for: the one it came with, or, from another magpie (magpie/…), the
+// agent's that magpie named (ClientUAHeader). magpie's own requests made
+// here (magpie-router/1, …) keep theirs.
+func agentUA(ctx context.Context, in http.Header) string {
+	ua := in.Get("User-Agent")
+	if c, ok := ctx.Value(callerCtx{}).(caller); ok && c.relayed && strings.HasPrefix(ua, "magpie/") {
+		return c.ua
+	}
+	return ua
+}
+
+// passOnUA names, on a request to a remote magpie, the agent's User-Agent
+// ua, for that magpie to send on as this one would; magpie's own is
+// never named, and a vendor is never sent the header (withCaller takes
+// it off what comes in).
+func passOnUA(req *http.Request, ua string) {
+	req.Header.Del(ClientUAHeader)
+	if ua != "" && !magpiesOwn(ua) {
+		req.Header.Set(ClientUAHeader, ua)
+	}
 }

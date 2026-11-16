@@ -22,6 +22,30 @@ authors whose PRs are closed on sight.
 Before changing code, read [LESSONS.md](LESSONS.md): what recent merged
 work got wrong and the rule that would have caught it.
 
+## Upstream and fork branches
+
+This checkout uses `origin` for the upstream repository
+(`yetone/magpie`) and `fork` for the personal fork. Check `git remote -v`
+before pushing if either remote may have changed.
+
+- Treat `origin/main` as the upstream source of truth. Fetch it before
+  starting work or syncing: `git fetch origin --tags`.
+- Keep personal changes on the fork's `main` or on named `feature/*`
+  branches. Do not commit personal changes directly to `origin/main`.
+- Start a feature intended for an upstream PR from the latest
+  `origin/main`, then push that feature branch to `fork`:
+  `git switch -c feature/<name> origin/main` and
+  `git push -u fork feature/<name>`. Keep the PR branch limited to that
+  feature.
+- To bring upstream changes into a personal branch, merge the fetched
+  `origin/main` into it, resolve conflicts, and push to `fork`. Prefer merge
+  for branches already pushed or shared; do not reset a personal branch to
+  `origin/main`, since that discards fork-only commits.
+- Build a personal version from the intended personal branch or commit, and
+  give it a distinct version label. Do not label fork builds with an
+  upstream release version unless the source commit and release process
+  meet the release requirements in [code standards](docs/code-standards.md).
+
 ## Built-in subscriptions that a plugin serves
 
 These built-in subscriptions are retired. Reaching them can break their
@@ -31,6 +55,7 @@ the same job:
 
 | Subscription | id | Plugin (npm) | Mover |
 | --- | --- | --- | --- |
+| Antigravity | `antigravity` | `@magpie-community/opencode-antigravity-auth` | `internal/provider/migrate_antigravity.go` |
 | Command Code | `commandcode-plan` | `@magpie-community/opencode-commandcode-auth` | `internal/provider/migrate_side.go` |
 | Cursor | `cursor` | `@magpie-community/opencode-cursor-auth` | `internal/provider/migrate_side.go` |
 | Devin | `devin` | `@magpie-community/opencode-devin-auth` | `internal/provider/migrate_side.go` |
@@ -76,8 +101,25 @@ Two cases decide it:
   nothing; a line over the Providers list says so, with why and a Move
   (`providers.unmoved`, `unmovedLine` in app.js). With no row of its own,
   the Add sheet leaves it to the Plugins page (`unusedSub`). Every
-  subscription in the table above is retired (10-17); gates ask
-  `provider.PluginServes(id)` (moved or retired).
+  subscription in the table above is retired (10-17; Antigravity 11-15);
+  gates ask `provider.PluginServes(id)` (moved or retired). Gemini CLI
+  (`gemini`) and the agy agent stay built in.
+- **Antigravity's plugin is withdrawn for anyone new** (the owner, 11-15:
+  正在使用的继续正常，加个提示，新用户不让下载): Google bans accounts it
+  sees on Code Assist through Antigravity's own client. The built-in's code
+  is still in the tree, but `googleLogins` lists nothing once the plugin
+  serves it, so it asks Google for nothing; the mover reads
+  `googleSavedLogins`. The plugin (0.2.1, the mover's min) serves as
+  before for whoever has it, and the Providers page tells them the risk
+  and points to Antigravity (local agy CLI),
+  `@magpie-community/opencode-agy-cli-auth`, which runs the user's own agy
+  over ACP (`withdrawn` in `/api/providers`). `plugin.Add` turns it away
+  for anyone who doesn't have it listed (`plugin.RefuseWithdrawn`); the
+  mover installs it for the user's own accounts under
+  `plugin.KeepWithdrawn`, and it left the registry. Don't offer it to
+  anyone new. The built-in route's tests serve it again through
+  `provider.AntigravityBuiltinForTest()` until its code is taken out
+  (#6723).
 
 The plugin does everything: sign-in, refresh, models, requests, usage and
 errors. It runs in the plugin host (`internal/plugin`). The built-ins'

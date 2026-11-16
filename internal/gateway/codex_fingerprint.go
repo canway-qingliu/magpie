@@ -1,43 +1,38 @@
 package gateway
 
 import (
-	"context"
 	"crypto/tls"
-	"fmt"
-	"net"
 	"net/http"
-	"os"
-	"runtime"
+	"slices"
 	"strings"
-	"time"
 
-	utls "github.com/refraction-networking/utls"
-	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/provider"
 )
 
-// codexTLSConfig returns a TLS configuration that mimics Codex CLI's fingerprint.
-// Codex CLI is written in Rust and uses rustls with its default configuration.
-// We use uTLS to fully mimic rustls's TLS handshake.
+// codexTLSConfig is used only for requests to the ChatGPT backend. It follows
+// rustls's protocol, cipher and curve choices, but Go's TLS stack does not
+// reproduce rustls's complete ClientHello byte for byte.
 //
-// Codex's TLS configuration (from codex-rs/http-client/src/client_builder.rs):
-//   - Uses reqwest with rustls backend
-//   - Uses rustls's default cipher suites and curves
-//   - Supports TLS 1.2 and 1.3
-//   - Uses ALPN protocols: h2, http/1.1
+// It is the profile a request takes when no account names its own
+// (codexTLSConfigFor).
 func codexTLSConfig() *tls.Config {
-	// Start with upstreamTLS if it's set (for tests)
 	config := &tls.Config{}
 	if upstreamTLS != nil {
 		config = upstreamTLS.Clone()
 	}
-
-	// rustls's default TLS configuration (as of rustls 0.23+)
-	// This matches what Codex CLI uses
 	config.MinVersion = tls.VersionTLS12
 	config.MaxVersion = tls.VersionTLS13
+	config.CipherSuites = codexAllCipherSuites
+	config.CurvePreferences = codexAllCurves
+	config.NextProtos = []string{"h2", "http/1.1"}
+	return config
+}
 
-	// rustls's default cipher suites (from rustls::crypto::aws_lc_rs::default_provider)
-	config.CipherSuites = []uint16{
+// codexAllCipherSuites is every suite a Codex route may offer, and
+// codexAllCurves every curve it may name. A profile of an account is a
+// part of each, so no account offers one magpie has no name for.
+var (
+	codexAllCipherSuites = []uint16{
 		tls.TLS_AES_128_GCM_SHA256,
 		tls.TLS_AES_256_GCM_SHA384,
 		tls.TLS_CHACHA20_POLY1305_SHA256,
@@ -48,293 +43,176 @@ func codexTLSConfig() *tls.Config {
 		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 	}
+	codexAllCurves = []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
+)
 
-	// rustls's default curves (from rustls::crypto::aws_lc_rs::default_provider)
-	config.CurvePreferences = []tls.CurveID{
-		tls.X25519,
-		tls.CurveP256,
-		tls.CurveP384,
+// codexTLSConfigFor is the TLS identity of the account named. Two accounts
+// of one subscription reach the backend as two clients, distinct in what
+// their hellos offer: their curves, and with them the key share each
+// sends, and their cipher suites.
+//
+// What tells them apart is which suites and curves are in a profile, never
+// the order they are written in: Go's crypto/tls takes a list as a set and
+// offers its own preference order over it (Config.cipherSuites,
+// Config.curvePreferences). So each account's profile is a part of
+// codexAllCipherSuites and codexAllCurves, chosen by the account's name —
+// the same account, the same profile, whatever machine it runs from.
+//
+// X25519 is in every profile, as it is in every recent client's: a hello
+// that offers it none is a client no backend has seen, which is a mark of
+// its own. What varies is P-256 and P-384 beside it, and the TLS 1.2
+// suites — a TLS 1.3 suite's place in a hello is Go's own, whatever the
+// config names (Config.cipherSuites filters TLS 1.0-1.2 alone).
+func codexTLSConfigFor(account string) *tls.Config {
+	// FNV-1a, then fmix64: a stable hash, unlike hash/maphash's per-run
+	// seed, mixed so each bit of it is the account's alone
+	var h uint64 = 14695981039346656037
+	for i := 0; i < len(account); i++ {
+		h ^= uint64(account[i])
+		h *= 1099511628211
 	}
-
-	// rustls's ALPN protocols (from reqwest's default configuration)
-	// Codex supports both HTTP/2 and HTTP/1.1
-	config.NextProtos = []string{"h2", "http/1.1"}
-
+	h = fmix64(h)
+	// X25519 always, as every recent client offers it; P-256 and P-384 by a
+	// bit each, and P-256 when neither, since a hello naming one curve is a
+	// client no backend has seen
+	curves := []tls.CurveID{tls.X25519}
+	for i, c := range []tls.CurveID{tls.CurveP256, tls.CurveP384} {
+		if h>>uint(i+2)&1 == 0 {
+			curves = append(curves, c)
+		}
+	}
+	if len(curves) == 1 {
+		curves = append(curves, tls.CurveP256)
+	}
+	// the TLS 1.2 suites by a bit each, TLS 1.3's always: Go offers those
+	// after the set the config names (Config.cipherSuites filters TLS
+	// 1.0-1.2 alone), so leaving one out would say nothing of the account
+	suites := make([]uint16, 0, len(codexAllCipherSuites))
+	var chosen []uint16
+	for i, s := range codexAllCipherSuites {
+		switch {
+		case !tls12Suite(s):
+			suites = append(suites, s)
+		case h>>uint(i+16)&1 == 0:
+			chosen = append(chosen, s)
+		}
+	}
+	for i := 0; len(chosen) < 2 && i < len(codexAllCipherSuites); i++ {
+		// every account offers two TLS 1.2 suites, so a hello offering one
+		// is no account of magpie's
+		if s := codexAllCipherSuites[len(codexAllCipherSuites)-1-i]; tls12Suite(s) && !slices.Contains(chosen, s) {
+			chosen = append(chosen, s)
+		}
+	}
+	suites = append(suites, chosen...)
+	config := codexTLSConfig()
+	config.CurvePreferences = curves
+	config.CipherSuites = suites
 	return config
 }
 
-// codexUTLSConfig returns a uTLS configuration that fully mimics rustls's handshake.
-// This provides a more accurate fingerprint than Go's crypto/tls.
-func codexUTLSConfig() *utls.Config {
-	// Start with upstreamTLS if it's set (for tests)
-	config := &utls.Config{}
-	if upstreamTLS != nil {
-		config = &utls.Config{
-			RootCAs:    upstreamTLS.RootCAs,
-			ServerName: upstreamTLS.ServerName,
+// fmix64 is murmur3's finalizer: it spreads a value's every bit, so a
+// change anywhere in an account's name moves the bits a profile reads.
+func fmix64(h uint64) uint64 {
+	h ^= h >> 33
+	h *= 0xff51afd7ed558ccd
+	h ^= h >> 33
+	h *= 0xc4ceb9fe1a85ec53
+	h ^= h >> 33
+	return h
+}
+
+// tls12Suite says s is a TLS 1.0-1.2 suite: the ones Config.CipherSuites
+// has a say in. TLS 1.3's are 0x1301 to 0x1303.
+func tls12Suite(s uint16) bool { return s < tls.TLS_AES_128_GCM_SHA256 || s > 0x1303 }
+
+// codexRequestHeader says a header says what the request itself is, and
+// not who the caller is: the Lite flag, which says the request is a
+// Responses-Lite one and goes with it (the backend reads it, and the
+// socket path moves it into the message's client_metadata).
+//
+// It is the one of the backend's headers about a request that is not the
+// caller's own (codexHeader): every other one says which call it is,
+// which turn of the conversation, or which conversation.
+func codexRequestHeader(k string) bool {
+	return strings.EqualFold(k, liteHeader)
+}
+
+// codexCallerHeader says a header of the caller's is the caller's own
+// identity and not the backend's: what the backend reads a turn by
+// (codexHeader — the call kind, the turn's metadata, the session the
+// conversation is cached under) and the caller's own name (its User-Agent
+// and originator).
+//
+// A caller that is Codex sends them and they go: they are how the backend
+// reads a Codex turn, and how it finds a conversation's cached prompt. A
+// caller that is not Codex sends none of them: the backend would read the
+// request as a Codex turn, and it is not one. What the request itself is
+// goes with it (codexRequestHeader).
+//
+// The sign-in's own headers are not among them (codexSignInHeader): the
+// credential and the device attestation are what the request is sent with,
+// and what holds for an account's plan alone is that account's.
+func codexCallerHeader(k string) bool {
+	switch strings.ToLower(k) {
+	case "user-agent", "originator":
+		return true
+	}
+	return codexHeader(k) && !codexRequestHeader(k)
+}
+
+// sanitizeNonCodexHeaders gives a caller that is not Codex the identity of
+// a Codex client and takes away what says which client, terminal or Codex
+// session the request came from (codexCallerHeader), so the ChatGPT
+// backend reads every request for a Codex model as the Codex request it is.
+//
+// The sign-in's own headers stay (codexSignInHeader): the credential and
+// the device attestation are what the request is sent with, the turn
+// state's routing is the backend's, and what holds for the account's plan
+// alone is that account's. So does magpie's own header (x-magpie-): it
+// is the window's, not the backend's.
+func sanitizeNonCodexHeaders(h http.Header) {
+	for name := range h {
+		key := strings.ToLower(name)
+		if codexCallerHeader(key) || strings.HasPrefix(key, "x-magpie-") {
+			delete(h, name)
 		}
 	}
-
-	// rustls's default configuration
-	config.MinVersion = utls.VersionTLS12
-	config.MaxVersion = tls.VersionTLS13
-
-	// rustls's default cipher suites
-	config.CipherSuites = []uint16{
-		tls.TLS_AES_128_GCM_SHA256,
-		tls.TLS_AES_256_GCM_SHA384,
-		tls.TLS_CHACHA20_POLY1305_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-	}
-
-	// rustls's default curves
-	config.CurvePreferences = []utls.CurveID{
-		utls.X25519,
-		utls.CurveP256,
-		utls.CurveP384,
-	}
-
-	// rustls's ALPN protocols
-	config.NextProtos = []string{"h2", "http/1.1"}
-
-	return config
-}
-
-// codexUTLSClientHelloID returns the ClientHelloID that best matches rustls's fingerprint.
-// rustls uses a similar fingerprint to Chrome, as both use BoringSSL/aws-lc-rs.
-func codexUTLSClientHelloID() utls.ClientHelloID {
-	// Use Chrome's fingerprint as it's the closest to rustls
-	// Both use BoringSSL/aws-lc-rs as the crypto provider
-	return utls.HelloChrome_Auto
-}
-
-// codexHTTP2Config returns HTTP/2 settings that mimic Codex CLI's behavior.
-// Codex CLI uses HTTP/2 with specific settings for the ChatGPT backend.
-func codexHTTP2Config() *http.HTTP2Config {
-	return &http.HTTP2Config{
-		// Codex CLI's HTTP/2 settings
-		MaxConcurrentStreams: 100,
-		MaxReadFrameSize:     16384, // 16KB
-	}
-}
-
-// codexTransport returns an http.Transport configured to mimic Codex CLI's
-// network behavior, including TLS fingerprint and HTTP/2 settings.
-func codexTransport(wait time.Duration) *http.Transport {
-	// Check if uTLS is enabled via environment variable
-	if os.Getenv("MAGPIE_CODEX_UTLS") == "1" {
-		return codexTransportWithUTLS(wait)
-	}
-
-	return &http.Transport{
-		Proxy:                 netproxy.Func,
-		ResponseHeaderTimeout: wait,
-		// Codex CLI uses a larger connection pool
-		MaxIdleConnsPerHost: 16,
-		IdleConnTimeout:     120 * time.Second,
-		// Enable HTTP/2
-		ForceAttemptHTTP2: true,
-		TLSClientConfig:   codexTLSConfig(),
-		HTTP2:             codexHTTP2Config(),
-		// Codex CLI's TCP keep-alive
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-	}
-}
-
-// codexUTLSDialer returns a DialContext function that uses uTLS for the TLS handshake.
-// This provides a more accurate rustls fingerprint than Go's crypto/tls.
-func codexUTLSDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// Dial TCP connection
-		dialer := &net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}
-		conn, err := dialer.DialContext(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-
-		// Wrap with uTLS
-		config := codexUTLSConfig()
-		clientHelloID := codexUTLSClientHelloID()
-		uconn := utls.UClient(conn, config, clientHelloID)
-
-		// Perform handshake
-		if err := uconn.Handshake(); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("uTLS handshake failed: %w", err)
-		}
-
-		return uconn, nil
-	}
-}
-
-// codexTransportWithUTLS returns an http.Transport that uses uTLS for TLS handshakes.
-// This provides the most accurate rustls fingerprint.
-func codexTransportWithUTLS(wait time.Duration) *http.Transport {
-	return &http.Transport{
-		Proxy:                 netproxy.Func,
-		ResponseHeaderTimeout: wait,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       120 * time.Second,
-		ForceAttemptHTTP2:     true,
-		// Use uTLS dialer instead of TLSClientConfig
-		DialContext: codexUTLSDialer(),
-		HTTP2:       codexHTTP2Config(),
-	}
-}
-
-// mimicCodexHeaders adjusts request headers to match Codex CLI's fingerprint.
-// This helps avoid detection by Cloudflare and other bot protection services.
-//
-// Codex CLI's User-Agent format (from codex-rs/login/src/auth/default_client.rs):
-//
-//	{originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
-//
-// Example:
-//
-//	codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
-func mimicCodexHeaders(h http.Header) {
-	// Remove Go's default User-Agent to avoid revealing we're a Go program
-	// Codex CLI's User-Agent format: {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
-	ua := h.Get("User-Agent")
-	if ua == "" || strings.HasPrefix(ua, "Go-http-client/") {
-		// Default to codex_cli_rs originator (from DEFAULT_ORIGINATOR)
-		// OS info should match the actual system
-		h.Set("User-Agent", buildCodexUserAgent())
-	}
-
-	// Codex CLI always sends these headers
+	// the request is a request for a Codex model, so it goes as a Codex
+	// client: Codex's own name, not the caller's and not magpie's
+	provider.CodexClientIdentity(h)
 	if h.Get("Accept") == "" {
 		h.Set("Accept", "application/json")
 	}
-
-	// Codex CLI's Accept-Language (from system locale)
 	if h.Get("Accept-Language") == "" {
 		h.Set("Accept-Language", "en-US,en;q=0.9")
 	}
-
-	// Remove Go's default Accept-Encoding to avoid revealing we're a Go program
-	// Codex CLI doesn't send Accept-Encoding (let the transport handle it)
-	h.Del("Accept-Encoding")
-
-	// Codex CLI's Cache-Control
 	if h.Get("Cache-Control") == "" {
 		h.Set("Cache-Control", "no-cache")
 	}
-
-	// Codex CLI's Pragma
 	if h.Get("Pragma") == "" {
 		h.Set("Pragma", "no-cache")
 	}
-
-	// Codex CLI sends an "originator" header (from DEFAULT_ORIGINATOR)
-	if h.Get("originator") == "" {
-		h.Set("originator", "codex_cli_rs")
-	}
-
-	// Remove headers that might reveal magpie's presence
-	h.Del("X-Magpie-Version")
-	h.Del("X-Magpie-Build")
+	h.Del("Accept-Encoding")
 }
 
-// isCodexClient returns true if the request is from Codex CLI itself.
-// This is determined by checking the User-Agent header for Codex's signature.
-func isCodexClient(r *http.Request) bool {
-	ua := r.Header.Get("User-Agent")
-	// Codex CLI's User-Agent starts with "codex_cli_rs/" or contains "codex"
-	// (from codex-rs/login/src/auth/default_client.rs)
-	return strings.HasPrefix(ua, "codex_cli_rs/") ||
-		strings.Contains(strings.ToLower(ua), "codex")
+func isCodexClient(r *http.Request) bool { return fromCodex(r.Header) }
+
+// codexAccountTurn says a turn to a ChatGPT account came from a Codex
+// client: the account is one of the ChatGPT backend's, and the client
+// names itself Codex (fromCodex).
+func codexAccountTurn(p provider.Provider, in http.Header) bool {
+	return p.Account != nil && p.Account.Agent == "codex" && fromCodex(in)
 }
 
-// buildCodexUserAgent constructs a User-Agent string that matches Codex CLI's format.
-// Format: {originator}/{version} ({os_type} {os_version}; {arch}) {terminal}
-// Based on codex-rs/login/src/auth/default_client.rs:get_codex_user_agent()
-func buildCodexUserAgent() string {
-	// Use runtime info to build a realistic User-Agent
-	osType := runtime.GOOS
-	arch := runtime.GOARCH
-
-	// Map Go's GOOS to Codex's os_type format (from os_info crate)
-	osTypeMap := map[string]string{
-		"darwin":  "Mac OS",
-		"linux":   "Linux",
-		"windows": "Windows",
-	}
-	if mapped, ok := osTypeMap[osType]; ok {
-		osType = mapped
-	}
-
-	// Get OS version (simplified - could use syscall for more accuracy)
-	osVersion := getOSVersion()
-
-	// Map Go's GOARCH to Codex's arch format (from os_info crate)
-	archMap := map[string]string{
-		"amd64": "x86_64",
-		"arm64": "arm64",
-		"386":   "x86",
-	}
-	if mapped, ok := archMap[arch]; ok {
-		arch = mapped
-	}
-
-	// Terminal info (from codex-rs/terminal-detection/src/lib.rs)
-	terminal := detectTerminal()
-
-	// Build the User-Agent string
-	// Format: codex_cli_rs/0.163.0 (Mac OS 15.8.1; arm64) iTerm.app/3.5.0
-	return fmt.Sprintf("codex_cli_rs/0.163.0 (%s %s; %s) %s",
-		osType, osVersion, arch, terminal)
-}
-
-// getOSVersion returns the OS version in Codex's format.
-// This is a simplified version; for production, consider using syscall or os/exec.
-func getOSVersion() string {
-	switch runtime.GOOS {
-	case "darwin":
-		// macOS version (e.g., "15.8.1")
-		// Could use syscall.Sysctl("kern.osproductversion") for accuracy
-		return "15.8.1"
-	case "linux":
-		// Linux kernel version (e.g., "6.5.0")
-		// Could use syscall.Uname() for accuracy
-		return "6.5.0"
-	case "windows":
-		// Windows version (e.g., "10.0.22631")
-		// Could use golang.org/x/sys/windows for accuracy
-		return "10.0.22631"
-	default:
-		return "unknown"
-	}
-}
-
-// detectTerminal returns the terminal name in Codex's format.
-// Based on codex-rs/terminal-detection/src/lib.rs
-func detectTerminal() string {
-	// Check TERM_PROGRAM environment variable
-	if termProgram := os.Getenv("TERM_PROGRAM"); termProgram != "" {
-		version := os.Getenv("TERM_PROGRAM_VERSION")
-		if version != "" {
-			return fmt.Sprintf("%s/%s", termProgram, version)
-		}
-		return termProgram
-	}
-
-	// Check TERM environment variable
-	if term := os.Getenv("TERM"); term != "" {
-		return term
-	}
-
-	// Default to a common terminal
-	return "iTerm.app/3.5.0"
+// codexIdentityFor gives a request to the ChatGPT backend the identity of a
+// Codex client, where it names no client of its own: its User-Agent, its
+// originator and the version that go with them.
+//
+// A request that goes out with no User-Agent goes with Go's own default
+// ("Go-http-client/1.1"), which says what magpie is written in — nothing
+// the backend needs to know, and a thing worth not telling a vendor whose
+// terms magpie is careful with.
+func codexIdentityFor(req *http.Request) {
+	provider.CodexClientIdentity(req.Header)
 }
