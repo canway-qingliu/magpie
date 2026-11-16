@@ -1,0 +1,153 @@
+# This fork's own build: the macOS app (a .app, a .dmg and a .zip) and the
+# terminal-only binaries for every platform.
+#
+# Upstream builds and signs the official releases in yetone/magpie-releases,
+# where the signing secrets live; this fork has no access to those, so the
+# same Makefile targets run here on a GitHub runner instead. The artifacts
+# are uploaded to the run, so a personal build can be fetched from the
+# Actions page, and a "mb-*" tag publishes them as a prerelease of this
+# repository.
+#
+# A tag starting with "v" is upstream's: release.yml would hand it to
+# yetone/magpie-releases, which this fork has no token for, and the run
+# would fail. So a personal build comes from a branch, or from a tag that
+# starts with "mb-".
+
+name: personal build
+
+on:
+  push:
+    branches: ['feature/**', 'main']
+    tags: ['mb-*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The version label (empty: git describe of the commit)'
+        required: false
+        default: ''
+
+# A new push replaces the run it started, so the queue behind a busy
+# runner does not grow.
+concurrency:
+  group: personal-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: macOS app
+    runs-on: macos-15
+    env:
+      # The version the app's Info.plist and its binary carry.
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe needs the tags; a shallow clone has none.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: The version
+        id: version
+        run: |
+          set -euo pipefail
+          v="$VERSION"
+          if [ -z "$v" ]; then
+            v=$(git describe --tags --always --dirty 2>/dev/null | tr -cd 'A-Za-z0-9._+-') || v=""
+          fi
+          [ -n "$v" ] || v=dev
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "the build is $v"
+
+      # The Makefile's build-release packs the UI's files into one zip and
+      # builds the binary; "app" wraps it in a bundle. The build carries
+      # Go's runtime with macOS's page release of build/darwin/
+      # footprint-overlay.sh, which needs a GOROOT outside the module
+      # cache: the runner's Go is one.
+      - name: Build
+        run: make app VERSION="${{ steps.version.outputs.version }}"
+
+      # An ad-hoc signature, as a personal build gets: it is not
+      # notarised, so Gatekeeper asks the first time it is opened.
+      - name: Sign
+        run: |
+          codesign --force --deep --sign - magpie.app
+          codesign --verify --deep --strict magpie.app
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent magpie.app dist/magpie-darwin-arm64.zip
+          stage=$(mktemp -d)
+          cp -R magpie.app "$stage/"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -volname magpie -srcfolder "$stage" -ov -format UDZO dist/magpie-darwin-arm64.dmg
+          rm -rf "$stage"
+          cd dist
+          shasum -a 256 magpie-darwin-arm64.dmg magpie-darwin-arm64.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-darwin-arm64-${{ steps.version.outputs.version }}
+          path: |
+            dist/magpie-darwin-arm64.dmg
+            dist/magpie-darwin-arm64.zip
+            dist/SHA256SUMS
+          retention-days: 30
+
+  cli:
+    name: cli (every platform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The terminal-only magpie, for every target the Makefile lists.
+      # CGO is off, so it crosses everywhere.
+      - name: Build
+        run: make release-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-cli
+          path: dist/magpie-cli-*
+          retention-days: 30
+
+  release:
+    # A tag says a personal build is wanted as a release of this
+    # repository. It is a prerelease: the official releases are the ones
+    # upstream publishes, and this one is not.
+    if: startsWith(github.ref, 'refs/tags/mb-')
+    needs: [app, cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --title "magpie $GITHUB_REF_NAME" \
+            --notes "A personal build of this fork, made on a GitHub runner. Not an upstream release: it is not signed, not notarised, and carries this fork's changes." \
+            dist/*
