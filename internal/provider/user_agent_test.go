@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -89,6 +90,44 @@ func TestProviderRequestsGoAsMagpie(t *testing.T) {
 	for i, ua := range uas {
 		if ua != want[i] {
 			t.Errorf("call %d went with User-Agent %q, want %q", i, ua, want[i])
+		}
+	}
+}
+
+// A request to the ChatGPT backend that names no client goes out with
+// Codex's own User-Agent, never with magpie's (a name the backend has no
+// client for) or Go's default ("Go-http-client/1.1"): a path that forgot
+// to sign as Codex is still a Codex request to the backend, not a
+// fingerprint that says what magpie is written in.
+func TestCodexBackendRequestWithoutUAGoesAsCodex(t *testing.T) {
+	var uas []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uas = append(uas, r.UserAgent())
+	}))
+	t.Cleanup(srv.Close)
+	old := CodexBase
+	CodexBase = srv.URL + "/backend-api/codex"
+	t.Cleanup(func() { CodexBase = old })
+	for _, path := range []string{"/backend-api/codex/responses", "/backend-api/codex/models"} {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := Keyed(http.DefaultClient).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+	}
+	if len(uas) != 2 {
+		t.Fatalf("%d calls went out: %v", len(uas), uas)
+	}
+	for i, ua := range uas {
+		if !strings.HasPrefix(ua, "codex_cli_rs/") {
+			t.Errorf("call %d to the ChatGPT backend went with User-Agent %q, want Codex's", i, ua)
+		}
+		if ua == "magpie" || strings.HasPrefix(ua, "Go-http-client") {
+			t.Errorf("call %d to the ChatGPT backend went with User-Agent %q, which names magpie or Go", i, ua)
 		}
 	}
 }

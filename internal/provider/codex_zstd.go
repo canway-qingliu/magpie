@@ -90,3 +90,17 @@ func codexTurnURL(u *url.URL) bool {
 // CodexTurnURL says whether u is CodexBase's /responses, where Codex sends
 // a turn.
 func CodexTurnURL(u *url.URL) bool { return codexTurnURL(u) }
+
+// IsCodexBackend says u is on the ChatGPT backend or its token issuer —
+// the hosts a request should never reach with Go's default User-Agent.
+func IsCodexBackend(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	for _, base := range []string{CodexBase, codexIssuer} {
+		if b, err := url.Parse(base); err == nil && strings.EqualFold(u.Host, b.Host) {
+			return true
+		}
+	}
+	return false
+}

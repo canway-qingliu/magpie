@@ -32,7 +32,7 @@ func (t named) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Header.Get("User-Agent") == "" {
 		// a copy, as a RoundTripper leaves its caller's request as it was
 		r := req.Clone(req.Context())
-		r.Header.Set("User-Agent", magpieOwnUA)
+		r.Header.Set("User-Agent", fallbackUA(r))
 		req = r
 	}
 	next := t.next
@@ -40,6 +40,18 @@ func (t named) RoundTrip(req *http.Request) (*http.Response, error) {
 		next = http.DefaultTransport
 	}
 	return next.RoundTrip(req)
+}
+
+// fallbackUA is the User-Agent a request with none goes out with: Codex's
+// own on a request to the ChatGPT backend, so a path that forgot to sign
+// as Codex doesn't go as magpie (a name the backend has no client for);
+// magpie's anywhere else, so Go's default doesn't say what magpie is
+// written in.
+func fallbackUA(req *http.Request) string {
+	if IsCodexBackend(req.URL) {
+		return codexUserAgent(codexVersion())
+	}
+	return magpieOwnUA
 }
 
 // CloseIdleConnections closes next's, where it keeps any: the wrapper

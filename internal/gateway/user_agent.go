@@ -29,7 +29,14 @@ func (t namedUA) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Header.Get("User-Agent") == "" {
 		// a copy, as a RoundTripper leaves its caller's request as it was
 		r := req.Clone(req.Context())
-		r.Header.Set("User-Agent", magpieUA())
+		if provider.IsCodexBackend(r.URL) {
+			// the ChatGPT backend serves Codex's clients: a path that
+			// forgot to sign as one doesn't go as magpie, a name the
+			// backend has no client for
+			provider.CodexClientIdentity(r.Header)
+		} else {
+			r.Header.Set("User-Agent", magpieUA())
+		}
 		req = r
 	}
 	return t.next.RoundTrip(req)
