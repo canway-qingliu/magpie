@@ -16,6 +16,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"log"
 	"sort"
 	"sync"
@@ -84,7 +85,6 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 	// and an account the user left out is not asked at all, by the loop
 	// or a press (#1902)
 	off := checkinOff()
-	gate := checkinGate(now)
 	for _, a := range c.accounts() {
 		if !a.On || a.key == "" || asked[a.key] || !c.reaches(a.key, off) {
 			continue
@@ -96,9 +96,9 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		}
 		asked[a.key] = true
 		prev, seen := st[a.key]
-		// the loop asks for a day not yet asked from the user's time of
-		// day on (checkinGate); a press asks at once
-		if !soon && (!seen || prev.Day != day) && now.Before(gate) {
+		// the loop asks for a day not yet asked from the account's own
+		// moment on (checkinGateFor); a press asks at once
+		if !soon && (!seen || prev.Day != day) && now.Before(checkinGateFor(now, a.key)) {
 			if seen {
 				prev.User, prev.By = a.User, c.by
 				out = append(out, prev.shown())
@@ -167,6 +167,24 @@ func (c checkiner) checkinNow(ctx context.Context, soon bool) []WorkBuddyCheckin
 		}
 	}
 	return out
+}
+
+// checkinJitter is the window after the day's gate in which an account's
+// own ask falls: a person doesn't press 签到 at the same second every
+// day, and a fleet of accounts doesn't press it at once.
+const checkinJitter = 90 * time.Minute
+
+// checkinGateFor is the account's own gate on now: checkinGate's moment
+// plus a jitter from a hash of the account's key and the Beijing day, so
+// it is the same on every look that day, differs between days and between
+// accounts, and holds no state to keep.
+func checkinGateFor(now time.Time, key string) time.Time {
+	g := checkinGate(now)
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	h.Write([]byte{0})
+	h.Write([]byte(wbCheckinDay(now)))
+	return g.Add(time.Duration(h.Sum64() % uint64(checkinJitter)))
 }
 
 // checkinGate is when the loop first asks for the Beijing day now is on:

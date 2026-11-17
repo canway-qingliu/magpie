@@ -628,7 +628,8 @@ func TestPluginCheckinOthersSettledForTheDay(t *testing.T) {
 // An answer magpie saw no claim for, given before noon Beijing, is asked
 // again every 30 minutes; a press asks at once.
 func TestPluginCheckinEarlyDoneAskedAgain(t *testing.T) {
-	early := time.Date(2026, 10, 23, 0, 0, 28, 0, beijing)
+	// past the jitter window so any account's gate has come
+	early := time.Date(2026, 10, 23, 1, 30, 28, 0, beijing)
 	run := func(p pluginCheckinProvider, now time.Time, press bool) WorkBuddyCheckin {
 		t.Helper()
 		got := p.checkiner(func() time.Time { return now }).checkinNow(context.Background(), press)
@@ -690,8 +691,8 @@ func TestPluginCheckinEarlyDoneAskedAgain(t *testing.T) {
 		for now := early; wbCheckinDay(now) == "2026-10-23"; now = now.Add(wbCheckinEvery) {
 			last = run(p, now, false)
 		}
-		// 00:00:28 to 11:30:28 provisional, 12:00:28 the day's
-		if calls != 25 || last.Again || last.Outcome != CheckinDone {
+		// 01:30:28 to 11:30:28 provisional, 12:00:28 the day's
+		if calls != 22 || last.Again || last.Outcome != CheckinDone {
 			t.Fatalf("%d asks, last %+v", calls, last)
 		}
 	})

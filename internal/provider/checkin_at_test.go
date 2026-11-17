@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"slices"
 	"testing"
 	"time"
 
@@ -52,13 +51,15 @@ func loopAsks(t *testing.T, c checkiner, now *time.Time, start time.Time, days i
 // times_ang on X: 可以调整自动签到的时间吗. With a time of day set, the
 // loop asks for each Beijing day at that time on the computer's clock,
 // once, every day, in a zone ahead of Beijing's day and one behind it; a
-// press asks before it; none set asks as the Beijing day turns.
+// press asks before it; none set asks as the Beijing day turns. Each
+// ask falls within checkinJitter of its base time: a person doesn't
+// press 签到 at the same second every day.
 func TestCheckinAtTimeOfDay(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		zone *time.Location
 		at   string
-		want string // the Beijing time of each ask
+		want string // the Beijing time of each ask's base (before jitter)
 		// catchUp: the first look asks, its Beijing day's time gone by
 		catchUp bool
 	}{
@@ -85,11 +86,15 @@ func TestCheckinAtTimeOfDay(t *testing.T) {
 					days[wbCheckinDay(a)] = true
 					continue
 				}
-				if got := a.In(beijing).Format("15:04"); got != tc.want {
-					t.Fatalf("asked at %s (Beijing %s), want Beijing %s; all: %v", a.Format(time.RFC3339), got, tc.want, asked)
+				// each ask falls at or after its base time, within checkinJitter
+				base, err := time.ParseInLocation("15:04", tc.want, beijing)
+				if err != nil {
+					t.Fatal(err)
 				}
-				if tc.at != "" && a.Format("15:04") != tc.at {
-					t.Fatalf("asked at %s on the computer's clock, want %s", a.Format("15:04"), tc.at)
+				ab := a.In(beijing)
+				base = time.Date(ab.Year(), ab.Month(), ab.Day(), base.Hour(), base.Minute(), 0, 0, beijing)
+				if ab.Before(base) || ab.Sub(base) > checkinJitter {
+					t.Fatalf("asked at %s (Beijing %s), want Beijing %s + [0, %v); all: %v", a.Format(time.RFC3339), ab.Format("15:04"), tc.want, checkinJitter, asked)
 				}
 				day := wbCheckinDay(a)
 				if days[day] {
@@ -132,7 +137,7 @@ func TestCheckinAtTimeOfDay(t *testing.T) {
 
 // A vendor whose day turns at 10:00 Beijing (a plugin's until, Qoder's)
 // gets one ask in each of its days with the time set at 20:00: its turn
-// falls before the time, and the claim at 20:00 is that day's.
+// falls before the time, and the claim near 20:00 is that day's.
 func TestCheckinAtKeepsVendorDays(t *testing.T) {
 	claudeHome(t)
 	checkinAtSet(t, "20:00")
@@ -148,17 +153,19 @@ func TestCheckinAtKeepsVendorDays(t *testing.T) {
 	now, calls := start, 0
 	c := pluginCheckinClaims("fakeco", tenNext, &now, &calls).checkiner(func() time.Time { return now })
 	asked := loopAsks(t, c, &now, start, 4)
-	var want []time.Time
-	for d := range 4 {
-		want = append(want, time.Date(2026, 11, 5+d, 20, 0, 0, 0, beijing))
-	}
-	if !slices.EqualFunc(asked, want, time.Time.Equal) {
-		t.Fatalf("asked at %v, want %v", asked, want)
+	// each ask at or after 20:00 Beijing, within checkinJitter
+	for _, a := range asked {
+		ab := a.In(beijing)
+		base := time.Date(ab.Year(), ab.Month(), ab.Day(), 20, 0, 0, 0, beijing)
+		if ab.Before(base) || ab.Sub(base) > checkinJitter {
+			t.Fatalf("asked at %s, want Beijing 20:00 + [0, %v)", ab.Format("15:04"), checkinJitter)
+		}
 	}
 	// each vendor day [10:00, 10:00) holds one
 	for i := 1; i < len(asked); i++ {
-		if asked[i].Sub(asked[i-1]) != 24*time.Hour {
-			t.Fatalf("asks %v apart", asked[i].Sub(asked[i-1]))
+		gap := asked[i].Sub(asked[i-1])
+		if gap < 22*time.Hour || gap > 26*time.Hour {
+			t.Fatalf("asks %v apart, want ~24h", gap)
 		}
 	}
 }

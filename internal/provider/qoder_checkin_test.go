@@ -341,7 +341,8 @@ func TestQoderCheckinCampaignCache(t *testing.T) {
 				// A recent cached result must still be refreshed on a day change.
 				now = time.Date(2026, 10, 7, 23, 55, 0, 0, beijing)
 				l.tick(t.Context(), c)
-				now = time.Date(2026, 10, 8, 0, 0, 0, 0, beijing)
+				// past the jitter window so any account's gate has come
+				now = time.Date(2026, 10, 8, 1, 35, 0, 0, beijing)
 				rs = l.tick(t.Context(), c)
 				if len(rs) != 1 || rs[0].Outcome != CheckinDone || rs[0].Day != wbCheckinDay(now) || !rs[0].Asked || gets != 4 || posts != claims {
 					t.Fatalf("midnight kept yesterday's result: %+v, reads %d, claims %d", rs, gets, posts)

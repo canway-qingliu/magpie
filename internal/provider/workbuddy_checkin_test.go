@@ -167,8 +167,10 @@ func TestWorkBuddyCheckinOncePerDay(t *testing.T) {
 		t.Fatalf("asked again the same day: status %d, claims %d", s, cl)
 	}
 
-	// past midnight in Beijing (16:05 UTC): a new day, claimed again
-	now = now.Add(10 * time.Minute)
+	// past midnight in Beijing (16:05 UTC): a new day, but the gate may
+	// not have come yet with the jitter; past the jitter window (17:35
+	// UTC) it has
+	now = now.Add(105 * time.Minute)
 	f.mu.Lock()
 	f.checked = false
 	f.mu.Unlock()
@@ -532,10 +534,11 @@ func TestWorkBuddyCheckinUnauthorizedThroughPlugin(t *testing.T) {
 func TestWorkBuddyCheckinEarlyDoneAskedAgain(t *testing.T) {
 	f := &fakeWBCheckin{active: true, checked: true}
 	srv := f.serve(t)
-	now := time.Date(2026, 10, 22, 16, 0, 28, 0, time.UTC) // 00:00:28 Beijing
+	// past the jitter window so the gate has come for any account
+	now := time.Date(2026, 10, 22, 17, 30, 28, 0, time.UTC) // 01:30:28 Beijing
 	c := wbCheckinFixture(t, srv, &now)
 	if rs := c.checkinNow(context.Background(), false); len(rs) != 1 || rs[0].Outcome != CheckinDone || !rs[0].Again {
-		t.Fatalf("at midnight: %+v", rs)
+		t.Fatalf("after midnight: %+v", rs)
 	}
 	f.mu.Lock()
 	f.checked = false
