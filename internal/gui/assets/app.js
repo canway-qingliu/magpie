@@ -3079,12 +3079,16 @@ function dragScroll(list) {
       : down && y > bounds.bottom - edge ? Math.min(1, (y - bounds.bottom + edge) / edge) : 0;
   } };
 }
-// dragListen: a drag's listeners (letting go saves; Escape, blur, resize cancel)
+// dragListen: a drag's listeners (letting go saves; Escape, blur, resize cancel).
+// A finger or pen is captured by what it pressed, a grip inside the handle
+// too: the handle taking the capture makes that child lose it, and its
+// lostpointercapture bubbles up here, so only the handle's own cancels
+// (chet030714 on X: a page's row couldn't be dragged on a phone).
 function dragListen(handle, move, finish) {
-  const cancel = (ev) => finish(false, ev);
-  const on = [[document, "pointermove", move, { passive: false }], [document, "pointerup", (ev) => finish(true, ev)],
-    [document, "pointercancel", cancel], [handle, "lostpointercapture", cancel], [window, "blur", cancel], [window, "resize", cancel],
-    [document, "keydown", (ev) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopImmediatePropagation(); finish(false); } }, true]];
+  const cancel = (e) => finish(false, e);
+  const on = [[document, "pointermove", move, { passive: false }], [document, "pointerup", (e) => finish(true, e)],
+    [document, "pointercancel", cancel], [handle, "lostpointercapture", (e) => e.target == handle && cancel(e)], [window, "blur", cancel], [window, "resize", cancel],
+    [document, "keydown", (e) => { if (e.key == "Escape") { e.preventDefault(); e.stopImmediatePropagation(); cancel(); } }, true]];
   for (const [t, n, f, o] of on) t.addEventListener(n, f, o);
   return () => { for (const [t, n, f, o] of on) t.removeEventListener(n, f, o); };
 }
@@ -6266,6 +6270,7 @@ function renderProviders(quiet) {
   if (importingApps) dialog = renderImportApps(importingApps);
   keptIcons = null;
   markUpstream();
+  globalThis.markBalances?.(); // plugins/usage/page.js
   view.scrollTop = top; // first: a closing dialog folds into its row where it is
   if (dialog) openModal(dialog, quiet); else closeModal();
 }
@@ -8044,7 +8049,7 @@ function advancedSet(d, p) {
     [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
     !!d.rateWindows?.length ||
     !!(d.searches || d.authHeader || d.passUserAgent === false || d.unredacted || d.countFree || d.billing || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff || d.noBalanceProbe || d.http1 || d.socket || d.imageFilesOff || d.passErrors || d.clientCert || d.serverCA || d.serverPin || d.resolve) ||
-    !!d.fallback?.length || !!p?.balanceToken?.set;
+    !!d.fallback?.length || !!(p?.balanceToken?.set || p?.connectAgents);
 }
 function priceRateError(ed) {
   shown(ed.querySelector("input.price-rate"))?.focus(NO_SCROLL);
@@ -9906,15 +9911,19 @@ function drawEditor(p, presetID) {
   }
   // off when added
   if ((p?.preset || pr?.id) === "remote-magpie" && !p?.account) {
-    const [l, c] = tick(t("Add its MCP servers to the Library"), (draft.libraryMCP ??= !!p?.libraryMCP));
-    l.classList.add("library-mcp");
-    c.onchange = () => (draft.libraryMCP = c.checked);
-    ed.append(...field(t("MCP servers"), l));
-    // KoiLx0 on X
-    const [l2, c2] = tick(t("Use its skills and prompts"), (draft.libraryShared ??= !!p?.libraryShared));
-    l2.classList.add("library-shared");
-    c2.onchange = () => (draft.libraryShared = c2.checked);
-    ed.append(...field(t("Skills and prompts"), l2));
+    // KoiLx0 on X: its skills and prompts; an agent connected there,
+    // installed here, connected here too, one disconnected here stays so
+    // (agent.SetConnectAgents)
+    for (const [k, say, head, to] of [
+      ["libraryMCP", t("Add its MCP servers to the Library"), t("MCP servers"), ed],
+      ["libraryShared", t("Use its skills and prompts"), t("Skills and prompts"), ed],
+      ["connectAgents", t("Connect new agents to this remote"), t("Agents"), advIn],
+    ]) {
+      const [l, c] = tick(say, (draft[k] ??= !!p?.[k]));
+      l.classList.add(k.replace(/(?=[A-Z])/, "-").toLowerCase());
+      c.onchange = () => (draft[k] = c.checked);
+      to.append(...field(head, l));
+    }
   }
   // lcc580 on X
   if ((p?.preset || pr?.id) === "remote-magpie") {
@@ -10136,11 +10145,12 @@ function drawEditor(p, presetID) {
       pair.append(side);
     }
     const rows = [
-      ...field(idName, ak, ""),
+      // what a RAM user's key needs (aliRAMHint, MetalHqa on X)
+      ...field(idName, ak, access.vendor === "alibaba" ? t(ALI_RAM) : ""),
       ...field(secretName, pair, tc
         ? t("Token Plan Enterprise's usage is told only to the Tencent Cloud account's API key (console → Access management → API keys), not to the plan's API key. Give its SecretId and SecretKey here for the Usage page to show it; a sub-user's key that may read TokenHub is enough. It is used for nothing else.")
         : access.vendor === "alibaba"
-        ? t("The plan's usage is told only to the Alibaba Cloud account's AccessKey (console → AccessKey), not to the plan's API key. Give its AccessKey ID and Secret here for the Usage page to show it; a RAM user that may use Model Studio is enough. It is used for nothing else.")
+        ? t("The plan's usage is told only to the Alibaba Cloud account's AccessKey (console → AccessKey), not to the plan's API key. Give its AccessKey ID and Secret here for the Usage page to show it. It is used for nothing else.")
         : t("The plan's 5-hour, weekly and monthly windows are told only to the account's access key (Volcengine console → API Access Keys), not to the plan's API key. Give it here for the Usage page to show them; it is used for nothing else.")),
     ];
     ed.append(...rows);
@@ -10408,8 +10418,7 @@ function drawEditor(p, presetID) {
     if (p?.takesListOff) body.listOff = !!draft.listOff;
     if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; body.hiddenDrawers = draft.hiddenDrawers; body.hiddenVideomakers = draft.hiddenVideomakers; body.noModels = noneChosen(); body.bestInFamily = bestChosen(); body.modelPrefs = modelPrefsOfDraft(); Object.assign(body, routingOfDraft(p)); }
     body.searches = !!draft.searches && searchable();
-    if (draft.libraryMCP != null) body.libraryMCP = draft.libraryMCP;
-    if (draft.libraryShared != null) body.libraryShared = draft.libraryShared;
+    for (const k of ["libraryMCP", "libraryShared", "connectAgents"]) if (draft[k] != null) body[k] = draft[k];
     body.pinUpstream = !!draft.pinUpstream;
     if (twoKeyHeaders()) body.authHeader = draft.authHeader || "";
     body.unredacted = !!draft.unredacted;
@@ -10733,9 +10742,10 @@ async function openImportApps(discovered) {
   renderProviders();
 }
 
-// appIcon is an import source's logo; Claude Code, Codex and OpenCode have
-// their marks among the vendor icons rather than an app tile of their own.
-const appIcon = (id) => id === "claude-code" ? "icons/claudecode-color.svg" : id === "codex" ? "icons/codex-color.svg" : id === "opencode" ? "icons/opencode.svg" : `icons/app-${id}.png`;
+// appIcon is an import source's logo; Claude Code, Codex, OpenCode and
+// Antigravity's CLI have their marks among the vendor icons rather than an
+// app tile of their own.
+const appIcon = (id) => "icons/" + ({ "claude-code": "claudecode-color.svg", codex: "codex-color.svg", opencode: "opencode.svg", agy: "antigravity-color.svg" }[id] || `app-${id}.png`);
 
 function renderImportApps(ia) {
   const ed = el("div", "editor new importapps");
@@ -11381,17 +11391,22 @@ function emptyModelsHint(p) {
   if (providers?.fetching && !p.fetched && !p.listError) return "Asking your resource for its deployments with this key…";
   return "No deployments came back for this key. Fetch models again, or type a deployment's name as a model id.";
 }
+// queuedSaid: a model test's result its vendor queued, which is no answer:
+// routing gives way to the next member at once, and the last one's wait
+// can end in the queue's 503 (@sufeng1894 on X)
+const queuedSaid = (x) => t("Queued at its vendor, not answered: {queue}", { queue: x.queued });
 function renderModels(p) {
   // a chip's dot: how its model answered, when it has been asked
   const tested = (c, id) => {
     const got = modelTests[p.id];
     if (!got || !(id in got)) return;
     const x = got[id];
-    c.append(el("span", "tdot " + (!x ? "wait" : x.ok ? "ok" : "bad")));
+    // queued: neither green nor a failure (queuedSaid)
+    c.append(el("span", "tdot " + (!x ? "wait" : x.queued ? "queued" : x.ok ? "ok" : "bad")));
     // the API it was asked on said, where the answer says (01huadalang:
     // 右键选择测试只能测试出是不是通的，不能说什么协议是通的)
     const via = x?.protocol ? apiLabel(x.protocol) : "";
-    c.title = !x ? t("Testing…") : x.ok && x.queued ? x.queued : x.ok ? (via ? t("Answered via {api} in {took}", { api: via, took: ledTook(x.ms) }) : t("Answered in {took}", { took: ledTook(x.ms) })) : (via ? via + " · " : "") + (x.status ? x.status + " · " : "") + x.error;
+    c.title = !x ? t("Testing…") : x.queued ? queuedSaid(x) : x.ok ? (via ? t("Answered via {api} in {took}", { api: via, took: ledTook(x.ms) }) : t("Answered in {took}", { took: ledTook(x.ms) })) : (via ? via + " · " : "") + (x.status ? x.status + " · " : "") + x.error;
   };
   // a chip's right-click tests that model alone (yonghe); off, saying why, where it can't be (ARNO)
   const noTest = modelTestWhy(p);
@@ -12157,7 +12172,11 @@ function renderModels(p) {
       const r = await provTest(p.id, { ...asTyped(), test: ids });
       r.results.forEach((x, i) => { got[ids[i]] = x; });
       const i = r.results.findIndex((x) => !x.ok), x = r.results[i], bad = r.results.filter((x) => !x.ok).length;
-      status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: ids[i], error: (x.status ? x.status + " · " : "") + x.error }) : t("All {n} models answered", { n: ids.length }), x ? "err" : "ok");
+      // a queued model didn't answer, though it isn't a failure either
+      const k = r.results.findIndex((x) => x.queued);
+      status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: ids[i], error: (x.status ? x.status + " · " : "") + x.error })
+        : k >= 0 ? ids[k] + ": " + queuedSaid(r.results[k])
+        : t("All {n} models answered", { n: ids.length }), x ? "err" : k >= 0 ? "" : "ok");
     } catch (e) { delete modelTests[p.id]; testErr(e); }
     draw();
   });
@@ -12171,8 +12190,8 @@ function renderModels(p) {
       const r = await provTest(p.id, { ...asTyped(), test: [id], as, account });
       const x = got[id] = r.results[0];
       const api = x.protocol ? apiLabel(x.protocol) : "", took = ledTook(x.ms), model = id, error = (x.status ? x.status + " · " : "") + x.error;
-      status((x.ok ? (api ? t("{model} answered via {api} in {took}", { model, api, took }) : t("{model} answered in {took}", { model, took }))
-        : api ? t("{model} didn't answer via {api}: {error}", { model, api, error }) : t("{model} didn't answer: {error}", { model, error })) + (p.testPicks && x.account ? " · " + x.account : ""), x.ok ? "ok" : "err");
+      status((x.queued ? model + ": " + queuedSaid(x) : x.ok ? (api ? t("{model} answered via {api} in {took}", { model, api, took }) : t("{model} answered in {took}", { model, took }))
+        : api ? t("{model} didn't answer via {api}: {error}", { model, api, error }) : t("{model} didn't answer: {error}", { model, error })) + (p.testPicks && x.account ? " · " + x.account : ""), x.queued ? "" : x.ok ? "ok" : "err");
     } catch (e) { delete got[id]; testErr(e); }
     draw();
   };
@@ -13547,9 +13566,13 @@ function renderAccounts(a, p) {
   const quota = loginUsageOf(a.agent);
   // signed out while spent, back once it has room (#408)
   const back = ls.find((l) => l.returns && !l.active);
+  // the setup-token Claude Code itself uses over its sign-in
+  const tokenUsed = ls.find((l) => l.uses);
   for (const l of ls) {
     const on = isOn(l);
     const row = el("div", "acc" + (on ? " in-use" : " off") + (l.user === justAdded ? " new" : ""));
+    // Use that switches Claude Code itself
+    const swUse = (title, b = el("button", "text", t("Use"))) => (b.title = title, b.onclick = () => (b.classList.add("busy"), accountAction("login/switch", { agent: a.agent, user: l.user }, t("{agent} now uses {user}", { agent: a.agentName, user: l.user }))), b);
     // its Remove, titled as given; true: the own account's, else the plain one
     const forgetOf = (title) => {
       const f = el("button", "text quiet", t("Remove"));
@@ -13642,6 +13665,11 @@ function renderAccounts(a, p) {
       signed.title = t("{agent} is kept signed in to this account; requests through magpie go to the accounts in their order", { agent: a.agentName });
       line.append(signed);
       if (on) line.append(makeFirst(l));
+    } else if (l.active && tokenUsed) {
+      // its sign-in still, under the setup-token Claude Code uses over it
+      const signed = el("span", "using", l.paused ? t("Paused") : t("Signed in"));
+      signed.title = t("{agent} is signed in to this account, but uses {user}'s setup-token over it", { agent: a.agentName, user: tokenUsed.user });
+      line.append(signed, swUse(t("Switch {agent} itself back to this account", { agent: a.agentName })));
     } else if (l.active) {
       const using = el("span", "using", l.paused ? t("Paused") : back ? t("First for now") : several ? t("First") : t("In use"));
       if (back && !l.paused) using.title = t("{user} was nearly used up, so magpie signed {agent} in to this one; it goes back to {user} once that has room again", { user: back.user, agent: a.agentName });
@@ -13670,10 +13698,13 @@ function renderAccounts(a, p) {
         line.append(forget);
         if (l.user === firstUser) line.append(el("span", "using", t("First")));
         else if (on) line.append(makeFirst(l));
+      } else if (l.token && l.uses) {
+        const using = el("span", "using", t("In use"));
+        using.title = t("{agent} itself uses this setup-token, set in its settings.json", { agent: a.agentName });
+        line.append(forget, using);
       } else if (l.token) {
-        const only = el("span", "using", t("magpie only"));
-        only.title = t("Added by a setup-token: requests through magpie use it; Claude Code itself can't be signed in to it");
-        line.append(forget, only);
+        // Claude Code itself switched to it in its settings.json (liukaybee on X)
+        line.append(forget, swUse(t("Switch {agent} itself to this setup-token, in its settings.json; its own sign-in stays", { agent: a.agentName })));
       } else if (l.accessOnly) {
         const only = el("span", "using", t("magpie only"));
         only.title = t("Kept access token only: requests through magpie use it until it expires; Codex itself isn't signed in to it, as Codex would renew it");
@@ -14048,6 +14079,8 @@ function redrawAccounts(agent) {
 // quotaError says why an allowance can't be read, the raw error in the tooltip.
 // SIGN_IN_GONE: a read saying the sign-in is gone (signInGone)
 const SIGN_IN_GONE = /sign-in has (expired|lapsed)|sign in again/i;
+// the grants Alibaba's Token Plan asks of a RAM user's AccessKey (aliRAMHint): the editor's note and its card's refusal
+const ALI_RAM = "A RAM user's AccessKey needs AliyunTokenPlanReadOnlyAccess and AliyunBSSReadOnlyAccess, and Administrator or Subscription plan in Model Studio → Account Management; the main account's needs none";
 
 function quotaError(err, q) {
   if (/^Claude Code: claude-tui: .{0,40}(stays on its first-run screens|shows its first-run notes)/.test(err)) return t("Finish Claude Code's first-run setup, then refresh. Run magpie claude-code to find its executable.");
@@ -14067,6 +14100,7 @@ function quotaError(err, q) {
   // a Volcengine or Tencent plan with no access key (#1821)
   if (/^this plan's usage is read with the account's access key: give its SecretId/.test(err)) return t("This plan's usage needs the account's SecretId and SecretKey — give them in the provider's settings");
   if (/^this plan's usage is read with the account's access key/.test(err)) return t("This plan's usage needs the account's AccessKey ID and Secret — give them in the provider's settings");
+  if (/a RAM user's AccessKey needs/.test(err)) return t(ALI_RAM);
   // a Qwen AI platform plan (qianwen_plan.go)
   if (/^(this plan's usage is told only to a sign-in on|signed out of) the Qwen AI platform/.test(err)) return t("This plan's usage needs a sign-in to the Qwen AI platform — sign in in the provider's settings");
   // a Baidu Qianfan Token Plan Personal (qianfan_plan.go)
@@ -16052,6 +16086,7 @@ function loadQuotas(asked, again) {
       if (quotasLoading === p) quotasLoading = null;
       if (!same) renderQuotas(true);
       if (view === "usage") loadUpstream();
+      globalThis.markBalances?.();
       if (reading && !quotasLater && ++quotasTries <= 20) quotasLater = setTimeout(() => { quotasLater = 0; loadQuotas(false, true); }, 1500);
       if (mode === "panel" && state?.agents && !panelAccts) panelAccounts();
     });
@@ -16466,20 +16501,6 @@ function acctsMore(provider, n) {
     backToReader($("#view-usage"));
   };
   return b;
-}
-// keysSum: the keys' balances added up, written as theirs are ("$12.50"),
-// when each is one amount in the same currency; "" otherwise
-function keysSum(subs) {
-  let total = 0, unit = null;
-  for (const q of subs) {
-    const m = !q.error && !q.balanceParts?.length && (q.balance || "").match(/^([^\d-]*)(-?\d[\d,]*(?:\.\d+)?)(\D*)$/);
-    if (!m) return "";
-    const u = m[1] + "|" + m[3];
-    if (unit != null && u !== unit) return "";
-    unit = u;
-    total += Number(m[2].replace(/,/g, ""));
-  }
-  return balanceAmount(subs[0], total);
 }
 // the card's button: the accounts in brief (or, in the panel, left out) in
 // full, its count the ones it opens; or, every one in full, the ones it
@@ -17570,7 +17591,8 @@ function renderPanelUse() {
     const split = panelUseProvider ? "model" : panelUseSplit;
     const chart = el("div", "led-chart"), rank = el("div", "led-rank");
     card.append(head, chart, rank);
-    out.push(tot, card);
+    // the heatmap is plugins/usage/page.js's, once it has run: a read can come back before
+    out.push(tot, card, self.panelHeatCard?.() || "");
     box.replaceChildren(...out);
     slide(per, "puPeriod");
     slide(met, "puMetric");
@@ -19576,6 +19598,11 @@ function applyPrefs(s, rate) {
   const look = (s.accent || "") + "," + (s.wallpaper || "");
   if (look !== (applyPrefs.look ??= window.bootPrefs?.look ?? ",")) applyPrefs.look = look, import("./appearance.js").then(() => lookPaint(), () => {});
   applyPrefs.ready = true;
+  // a browser tab's title names this magpie (Settings' Name, else
+  // MAGPIE_NAME; starballl on X), as boot.js did for the first paint; the
+  // app's windows keep theirs
+  const named = s.name || s.nameEnv;
+  if (web) document.title = named ? named + " · magpie" : "magpie";
   // accounts hidden while personal data is masked, until chosen otherwise
   window.hideAccounts?.follow(!!s.redactPersonal);
   // this browser's choice from before it was a setting, carried over once
@@ -20054,6 +20081,8 @@ function renderSettings() {
   window.drawLook ? drawLook(s, keep) : import("./appearance.js").then(() => drawLook(s, keep), () => {});
   renderLangPick(s, keep);
   renderGatewayMode(s);
+  // Network and sharing's Advanced: what this magpie is called
+  window.instanceName ? instanceName(s, keep) : import("./instancename.js").then(() => instanceName(s, keep), () => {});
   window.renderNavPages ? renderNavPages() : import("./navpages.js").then(() => renderNavPages(), () => {});
   // a browser tab has its own zoom, and magpie leaves it to it
   $("#textSizeRow").hidden = web;
@@ -21250,7 +21279,7 @@ function renderAlerts(s, keep) {
 
 // AGENT_PREFS: an agent's own settings rows, by its id (openAgentPrefs)
 const AGENT_PREFS = {
-  codex: ["codexAgentsV1Row", "codexOpenRow", "codexSubagentModelRow", "codexServiceTierRow", "codexClientRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
+  codex: ["codexAgentsV1Row", "codexOpenRow", "codexSubagentModelRow", "codexServiceTierRow", "codexClientRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexSuggestionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
   claude: ["fullContextRow"],
   grok: ["fullContextRow"],
 };
@@ -21353,6 +21382,7 @@ function renderAgentPrefs() {
     ["#codexTitlesRow", "Names each thread in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
     ["#codexDescriptionsRow", "Writes each thread’s short description in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
     ["#codexPredictionsRow", "Guesses your next message for the composer, reading the whole conversation again each time; same as the session, it goes on the session’s model"],
+    ["#codexSuggestionsRow", "Finds prompts for Codex’s home page in the background, reading the project and connected apps, then checks them for safety; Codex’s own pick falls back to the provider’s default model, often auto. Turn them off in Codex: Settings › Configuration › Homepage suggestions"],
     ["#codexAutoReviewRow", "Decides an approval in your place when Codex’s approvals are on auto-review; Codex’s own pick is codex-auto-review, else the conversation’s model at low effort; on a ChatGPT Free plan, where codex-auto-review isn’t free, unset follows the session"],
     ["#codexMemoriesRow", "Writes Codex’s memories of past threads, in the background; same as the session, on the session’s model, or on Codex’s own memory models when that is one of Codex’s own"],
   ]) $(row + " .who").title = t(en);
@@ -21411,6 +21441,7 @@ function renderAgentPrefs() {
   renderCodexTitles(s);
   renderCodexDescriptions(s);
   renderCodexPredictions(s);
+  renderCodexSuggestions(s);
   renderCodexAutoReview(s);
   renderCodexMemories();
   renderCodexSubagentModel();
@@ -21462,29 +21493,40 @@ const namedIn = (models) => (id) => {
   const m = models.find((x) => x.id === id);
   return m ? `${m.name || m.id} · ${m.providerName}` : id;
 };
-// codexSidePick is the picker for where one of Codex's side requests goes
-// (descriptions, predictions, titles): as Codex sends it, off, or a model of
-// magpie's
-function codexSidePick(s, key, aria, none, path) {
-  const models = s.titleModels || [];
-  const named = namedIn(models);
-  const v = s[key] || "";
+// the button a preference's row picks its value with, named for readers
+function condButton(aria) {
   const b = el("button", "rt-cond on");
   b.type = "button";
   b.setAttribute("aria-label", t(aria));
-  if (v === "off") b.append(el("span", "", t("Off")));
-  else if (v) b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", named(v)));
-  else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
-  b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key, label: "model", value: v, options: [
-    { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
-    { value: "off", label: t("Off"), note: t(none), reset: true },
-    ...models.map(modelOpt)],
+  return b;
+}
+
+// codexPick is the picker for the model one of Codex's side requests goes
+// on: the first options (as Codex sends it, off, the session's) or a model
+// of magpie's, posted to settings/<path>
+function codexPick(s, key, aria, path, first) {
+  const models = s.titleModels || [];
+  const v = s[key] || "";
+  const o = first.find((x) => x.value === v);
+  const b = condButton(aria);
+  if (o) b.append(...(o.icon ? [icon(o.icon)] : []), el("span", "", o.label));
+  else b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", namedIn(models)(v)));
+  b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key, label: "model", value: v, options: [...first, ...models.map(modelOpt)],
   onPick: (id) => {
     if (id === v) return;
     prefWrite(api("settings/" + path, { model: id }));
   } }, b, ev);
   $("#" + key + "Pick").replaceChildren(b);
 }
+
+// descriptions, predictions and titles: as Codex sends it, off, or a model
+const codexSidePick = (s, key, aria, none, path) => codexPick(s, key, aria, path, [
+  { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
+  { value: "off", label: t("Off"), note: t(none), reset: true }]);
+
+// suggestions and auto-review: Codex's own pick unless one is set here
+const codexOwnPick = (s, key, aria, path, more = []) => codexPick(s, key, aria, path, [
+  { value: "", label: t("Codex’s own pick"), note: t("as Codex picks it"), icon: "openai", reset: true }, ...more]);
 
 // Codex's service tiers, its own names (JackyFill on X)
 const CODEX_TIERS = [
@@ -21499,9 +21541,8 @@ function renderCodexServiceTier(s) { codexMenuPick(CODEX_TIERS, s.codexServiceTi
 // posted on its own to settings/<path> as {<field>: value}
 function codexMenuPick(opts, v, label, key, field) {
   const cur = opts.find((o) => o.v === (v || "")) || opts[0];
-  const b = el("button", "rt-cond on", t(cur.name));
-  b.type = "button";
-  b.setAttribute("aria-label", t(label));
+  const b = condButton(label);
+  b.append(t(cur.name));
   b.setAttribute("aria-haspopup", "menu");
   b.onclick = (e) => {
     e.stopPropagation();
@@ -21528,25 +21569,13 @@ function renderCodexPredictions(s) { codexSidePick(s, "codexPredictions", "Codex
 // Codex's thread titles (#705)
 function renderCodexTitles(s) { codexSidePick(s, "codexTitles", "Codex thread titles", "no title, nothing sent", "codex-titles"); }
 
+// the model the Codex app's prompt suggestions go on (@0xcb198609 on X);
+// Codex's own setting turns them off, said in the row's tooltip
+function renderCodexSuggestions(s) { codexOwnPick(s, "codexSuggestions", "Codex prompt suggestions", "codex-suggestions"); }
+
 // Codex's auto-review model (#938)
 function renderCodexAutoReview(s) {
-  const models = s.titleModels || [];
-  const v = s.codexAutoReview || "";
-  const m = models.find((x) => x.id === v);
-  const b = el("button", "rt-cond on");
-  b.type = "button";
-  b.setAttribute("aria-label", t("Codex auto-review model"));
-  if (v) b.append(icon(m?.icon || "generic"), el("span", "", m ? `${m.name || m.id} · ${m.providerName}` : v == "session" ? t(SAME_SESSION) : v));
-  else b.append(icon("openai"), el("span", "", t("Codex’s own pick")));
-  b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "codexAutoReview", label: "model", value: v, options: [
-    { value: "", label: t("Codex’s own pick"), note: t("as Codex picks it"), icon: "openai", reset: true },
-    { value: "session", label: t(SAME_SESSION), icon: "generic" },
-    ...models.map(modelOpt)],
-  onPick: (id) => {
-    if (id === v) return;
-    prefWrite(api("settings/codex-auto-review", { model: id }));
-  } }, b, ev);
-  $("#codexAutoReviewPick").replaceChildren(b);
+  codexOwnPick(s, "codexAutoReview", "Codex auto-review model", "codex-auto-review", [{ value: "session", label: t(SAME_SESSION), icon: "generic" }]);
 }
 
 // renderCodexMemories: Codex's memories model (#985), its card's field, in
@@ -21560,9 +21589,7 @@ function renderCodexMemories() {
   row.hidden = gatewayMode || !f || (!f.options.length && !f.value);
   if (row.hidden) return;
   const opt = optionFor(f, f.value);
-  const b = el("button", "rt-cond on");
-  b.type = "button";
-  b.setAttribute("aria-label", t("Codex memories model"));
+  const b = condButton("Codex memories model");
   if (f.value) b.append(icon(opt?.icon || "generic"), el("span", "", optNamed(opt, f.value)));
   else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
   b.onclick = (ev) => openPicker(a, f, b, ev);
@@ -21580,9 +21607,7 @@ function renderCodexSubagentModel() {
   if (row.hidden) return;
   const said = codexSubSaid(a, f);
   const main = a.fields.find((x) => x.key === "model");
-  const b = el("button", "rt-cond on");
-  b.type = "button";
-  b.setAttribute("aria-label", t("Codex subagent model"));
+  const b = condButton("Codex subagent model");
   const own = f.value && f.value !== CODEX_SUB_LEAD;
   b.append(icon((own ? optionFor(f, f.value)?.icon : main && optionFor(main, main.value)?.icon) || "generic"), el("span", "", own ? optNamed(optionFor(f, f.value), f.value) : said.name));
   b.onclick = (ev) => openPicker(a, f, b, ev);
@@ -21831,7 +21856,7 @@ function renderReplies(s, keep) {
     [...waits, ["", t("No limit")]], ra, (v) => savePrefs({ ...keep, retryAfterCap: v === "" ? null : Number(v) }));
   // #2934
   const k = waitRow("classifyTimeoutRow", t("Intent classifier timeout"), t("How long a routing group's classifier is given to say which intent a turn is. The turn waits for it before it goes anywhere, and past it goes on without its answer. A slow classifier may need longer"),
-    [8, 15, 30, 60], s.classifyTimeout > 0 ? s.classifyTimeout : 8, "{n} s", (n) => savePrefs({ ...keep, classifyTimeout: n }));
+    [8, 15, 30, 60], s.classifyTimeout > 0 ? s.classifyTimeout : 15, "{n} s", (n) => savePrefs({ ...keep, classifyTimeout: n }));
   // the agent's instructions as a Claude run's system prompt (off unless on)
   const c = segRow("claudeLeanRow", t("Short Claude system prompt"),
     t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk"),
@@ -22167,6 +22192,8 @@ function pmSub(m) {
     if (m.via) return { "Neural Engine": t("On, with CoreML on the Neural Engine"), GPU: t("On, with CoreML on the GPU"), CPU: t("On, with CoreML on the CPU") }[m.device] || t("On, with CoreML");
     // the Intel build on Apple silicon: Go, translated, several times slower
     if (m.rosetta) return t("On, slowly under Rosetta: the next update installs magpie for Apple silicon");
+    // the x64 build on Windows on Arm, emulated
+    if (m.emulated) return t("On, slowly under x64 emulation: the next update installs magpie for Arm");
     if (m.gpuError && m.model === "astrlink-guard") return t("On, on the CPU: CoreML failed ({error})", { error: m.gpuError });
     // Privacy Filter lost the GPU: to its driver resetting it (device
     // lost), or to a fault; the GPU is tried again at gpuAgain
@@ -23346,7 +23373,8 @@ async function show(v) {
   if (v === "providers" && providersBehind) renderProviders();
   if (v === "providers" || rtView(v) || providersPage(v)) loadProviders().then(back, statusErr);
   // Routing's accounts' windows as Usage read them (#1833), never an asked read
-  if (rtView(v) && (!quotas || Date.now() - quotasAt > 60e3)) loadQuotas();
+  // and Providers' balances (rowBalance, plugins/usage/page.js)
+  if ((rtView(v) || v === "providers" && !featuresOff.has("usage")) && (!quotas || Date.now() - quotasAt > 60e3)) loadQuotas();
   if (v === "settings") (settingsLoad = loadSettings()).then(back, statusErr);
   if (v === "plugins") window.loadPlugins?.()?.then(back);
   syncTitle();
