@@ -253,6 +253,13 @@ func tlsProfileOf(ctx context.Context) string {
 // (WithTLSProfile), "" when it names none.
 func TLSProfileOf(ctx context.Context) string { return tlsProfileOf(ctx) }
 
+// Elsewhere sends a request that Go's own TLS can't carry another way,
+// before a transport of Dispatch's dials it: ok false leaves the request
+// to the transport. internal/provider sets it for OpenCode Zen's free
+// tier, which answers a client that isn't Bun's 429 (zen_bun.go); nil
+// leaves every request to its transport.
+var Elsewhere func(req *http.Request) (res *http.Response, ok bool, err error)
+
 // Dispatch is a RoundTripper sending a request through base, unless its
 // context names a provider's own proxy (With): then through a clone of
 // base kept for that proxy alone. Connections are so reused among the
@@ -311,6 +318,11 @@ type route struct {
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+	if f := Elsewhere; f != nil {
+		if res, ok, err := f(req); ok {
+			return res, err
+		}
+	}
 	if d.moved() {
 		d.CloseIdleConnections()
 	}
@@ -642,6 +654,9 @@ func Redact(raw string) string {
 		return ""
 	}
 	if settings.IsProxyRef(raw) {
+		if a := sshShown(raw); a != "" {
+			return a
+		}
 		// a saved proxy shown as its address, with no login
 		u.User = nil
 		return u.String()
@@ -655,6 +670,18 @@ func Redact(raw string) string {
 		address = strings.TrimPrefix(address, "http://")
 	}
 	return address
+}
+
+// sshShown is how a saved SSH proxy (a reference) is shown: its server's
+// address, not the tunnel's on loopback; "" for any other proxy.
+func sshShown(ref string) string {
+	id := settings.ProxyID(ref)
+	for _, p := range settings.Shared().Proxies {
+		if p.ID == id && p.IsSSH() {
+			return strings.TrimSpace(p.URL)
+		}
+	}
+	return ""
 }
 
 // fromEnv is the proxy the environment names for u: HTTPS_PROXY or

@@ -1085,7 +1085,9 @@ func claudeIn(at place) *Agent {
 		if n == 0 {
 			return dropCompact()
 		}
-		w := strconv.Itoa(n)
+		// Claude Code takes the variable as 1000000 at most
+		// (claudeCompactCap), and so it is written
+		w := strconv.Itoa(claudeCompactCap(n))
 		stash(map[string]string{compactKey: w})
 		if long {
 			stash(map[string]string{compactLongKey: "1"})
@@ -1393,7 +1395,8 @@ func claudeIn(at place) *Agent {
 			for _, e := range shown {
 				for _, id := range append([]string{gateway.DesktopID(e)}, again[e.ID]...) {
 					if claudeName(id) == "" {
-						models = append(models, claudeBudget{id: id, window: e.Context, long: gateway.DesktopListed1M(e), compact: work(e.ID, gateway.DesktopListed1M(e)), behaves: behaves[id] != ""})
+						long := gateway.DesktopListed1M(e)
+						models = append(models, claudeBudget{id: id, window: e.Context, long: long, compact: work(e.ID, long && e.Context >= claudeLong), behaves: behaves[id] != ""})
 					}
 				}
 			}
@@ -1422,7 +1425,7 @@ func claudeIn(at place) *Agent {
 			// the one for every model else, as the variable gave it: none
 			// on a Claude main model, which Anthropic runs to its own
 			if m, _ := tierAt(main); !claudeModel(strings.TrimSuffix(m, "[1m]")) && !provider.ClaudeGroup(strings.TrimSuffix(m, "[1m]")) {
-				def = s.Compact()
+				def = claudeCompactCap(s.Compact())
 			}
 		}
 		// the user's own top-level window is the one a model without an
