@@ -4422,6 +4422,17 @@ duplicate it. Attempt timings include any wait for a concurrency slot, while
 routing and retry delays remain visible as gaps inside the parent span.
 Tool execution inside the caller is outside the gateway's trace.
 
+With **Export metrics** on, the gateway's own way out is exported too, as
+`magpie.proxy.roundtrip.duration` (a histogram of each upstream round trip's
+seconds, by route class — `base` for the global/system proxy or direct,
+`choice` for a provider's or account's own proxy — and protocol) and
+`magpie.proxy.requests` (a counter by route class and result: `ok`, `4xx`,
+`5xx` or an error class such as `timeout`, `refused`, `reset`, `tls` or
+`proxy`, plus the connection pool's own turns: an HTTP/2 host given up on and
+dropped to HTTP/1.1, a transport made or evicted, an IPv4 retry, a dead
+HTTP/2 connection). These carry classes only — never a host, a proxy's URL
+or an account's name.
+
 Model-call spans also send estimated USD input, output and total costs to
 Langfuse via `langfuse.observation.cost_details`, using the same effective
 prices as Magpie's usage ledger (custom prices first, then catalog prices).

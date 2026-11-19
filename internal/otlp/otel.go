@@ -71,6 +71,7 @@ type otelExporter struct {
 	bytes      atomic.Int64 // the queued records' bodies, in bytes
 	sessions   atomic.Pointer[sessionAvailability]
 	identities sessions.TraceSessionIndex
+	proxystats *netproxyStats
 }
 
 // OTelEvery is how often the exporter sends what it holds, and
@@ -88,12 +89,29 @@ func (x *Exporter) Serve() func() {
 	if _, err := settings.OTelExport(); err != nil {
 		log.Printf("otel: %s", err)
 	}
+	e.proxystats = newNetproxyStats()
+	netproxy.Observe = e.proxystats.observe
 	watchCtx, stopWatch := context.WithCancel(e.ctx)
 	go e.watchSessions(watchCtx, time.Now(), OTelSessionsEvery)
 	go e.run(OTelEvery)
+	// the proxy's metrics flush on their own timer, so a gateway serving
+	// nothing still tells the collector its way out broke
+	proxyFlush := time.NewTicker(OTelEvery)
+	go func() {
+		for {
+			select {
+			case now := <-proxyFlush.C:
+				e.flushProxyMetrics(now)
+			case <-e.done:
+				proxyFlush.Stop()
+				return
+			}
+		}
+	}()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			netproxy.Observe = nil
 			stopWatch()
 			x.running.CompareAndSwap(e, nil)
 			close(e.stop)
@@ -321,7 +339,23 @@ func (e *otelExporter) flush(batch []otelItem) {
 			e.send(config, "metrics", otelMetrics(ledger, e.last, now))
 		}
 	}
+	e.flushProxyMetrics(now)
 	e.last = now
+}
+
+// flushProxyMetrics sends the proxy's metrics to the collector, or
+// nothing when there is none.
+func (e *otelExporter) flushProxyMetrics(now time.Time) {
+	if e.proxystats == nil {
+		return
+	}
+	config, err := settings.OTelExport()
+	if err != nil || !config.Enabled || !config.Metrics {
+		return
+	}
+	if payload := e.proxystats.metrics(now); payload != nil {
+		e.send(config, "metrics", payload)
+	}
 }
 
 func (e *otelExporter) send(config settings.OTel, signal string, payload any) {
