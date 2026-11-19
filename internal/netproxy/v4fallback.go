@@ -182,6 +182,7 @@ func v4Retry(t *http.Transport, req *http.Request) (*http.Response, error) {
 		}
 		again.Body = body
 	}
+	observe(Event{Kind: EventRetryV4})
 	return t.RoundTrip(again)
 }
 

@@ -177,6 +177,7 @@ func (p *calmPool) MarkDead(cc *http2.ClientConn) {
 		for i, c := range cs {
 			if c.cc == cc {
 				p.conns[addr] = append(cs[:i:i], cs[i+1:]...)
+				observe(Event{Kind: EventH2ConnDead})
 				return
 			}
 		}

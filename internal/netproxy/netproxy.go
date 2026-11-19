@@ -276,7 +276,13 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
 			req = req.WithContext(context.WithValue(req.Context(), directKey{}, true))
 		}
 	}
+	start := time.Now()
 	res, err := v4Retry(t, req)
+	e := Event{Kind: EventRoundTrip, Route: r.class(), Millis: time.Since(start).Milliseconds(), Err: errClass(err)}
+	if res != nil {
+		e.Proto, e.Status = res.Proto, res.StatusCode
+	}
+	observe(e)
 	if r.h1 {
 		return res, err
 	}
@@ -330,6 +336,7 @@ func (d *dispatch) transport(r route) *http.Transport {
 			t.CloseIdleConnections()
 			delete(d.own, k)
 		}
+		observe(Event{Kind: EventTransportEvict})
 	}
 	t := d.base.Clone()
 	if c := r.choice; c != "" {
@@ -364,6 +371,7 @@ func (d *dispatch) transport(r route) *http.Transport {
 		}
 	}
 	d.own[r] = t
+	observe(Event{Kind: EventTransportMade, Route: r.class()})
 	return t
 }
 

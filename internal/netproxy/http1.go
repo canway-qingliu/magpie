@@ -88,6 +88,7 @@ func markH2Broken(req *http.Request) {
 		h1For.at = map[string]time.Time{}
 	}
 	h1For.at[hostKey(req.URL)] = time.Now()
+	observe(Event{Kind: EventH2Broken})
 }
 
 // recordError says err is TLS finding the bytes it read are no record of
