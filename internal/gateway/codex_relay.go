@@ -85,6 +85,9 @@ func CodexRelay() http.Handler {
 			return
 		}
 		copyHeaders(req.Header, r.Header)
+		// a request that named no client of its own goes as a Codex client,
+		// never with Go's default User-Agent
+		codexIdentityFor(req)
 		req.Header.Del("Accept-Encoding")
 		provider.CodexCompressed(req, body)
 		res, err := client.Do(req)

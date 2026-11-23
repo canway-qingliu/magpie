@@ -28,6 +28,7 @@ import (
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/lazyre"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -988,6 +989,17 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 	s.codexUpstreamOn(w, r, rest, body, nil)
 }
 
+// codexProfileOf is the name the account on answers to for its TLS
+// identity (netproxy.TLSProfile): its agent and its user, in lower case as
+// the accounts list tells two apart. Its "" is Codex's own sign-in, which
+// keeps the profile no account names.
+func codexProfileOf(on *provider.Provider) string {
+	if on == nil || on.Account == nil || on.Account.AgentsOwn() {
+		return ""
+	}
+	return on.Account.Agent + "/" + strings.ToLower(strings.TrimSpace(on.Account.User))
+}
+
 // codexUpstreamOn is codexUpstream signed by the account on instead of
 // Codex's own sign-in, when on isn't nil (compactOn).
 func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest string, body []byte, on *provider.Provider) {
@@ -1285,6 +1297,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			ctx := provider.ViaSignedIn(traced, "codex")
 			if on != nil {
 				ctx = on.Via(traced)
+				// the account's own TLS identity, so two accounts of one
+				// subscription reach the backend as two clients
+				ctx = netproxy.WithTLSProfile(ctx, codexProfileOf(on))
 			}
 			req, err := http.NewRequestWithContext(ctx, r.Method, u, bytes.NewReader(body))
 			if err != nil {
@@ -1293,11 +1308,14 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				return
 			}
 			copyHeaders(req.Header, r.Header)
-			// Mimic Codex CLI's request headers to avoid fingerprinting,
-			// but only when the request is not from Codex CLI itself
+			// A Codex client keeps its own identity; another caller is given
+			// Codex's, without its app or terminal data.
 			if !isCodexClient(r) {
-				mimicCodexHeaders(req.Header)
+				sanitizeNonCodexHeaders(req.Header)
 			}
+			// a request that named no client of its own goes as a Codex
+			// client, never with Go's default User-Agent
+			codexIdentityFor(req)
 			if on != nil {
 				// the account's own token and id in place of the sign-in's;
 				// what Codex said it takes back stays as it said it
@@ -1417,10 +1435,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				res.Body.Close()
 				res.Body = io.NopCloser(bytes.NewReader(msg))
 				// Check if the rule has RetryOn502 set
-				retryOn502 := false
-				if tr != nil && tr.Rule != nil {
-					retryOn502 = tr.Rule.RetryOn502
-				}
+				retryOn502 := tr != nil && tr.Rule != nil && tr.Rule.RetryOn502
 				if codexBusy(res.StatusCode, msg, retryOn502) {
 					if wait, ok := passing(res.StatusCode, res.Header, msg, busyAgain); ok {
 						if !askAgain(res.StatusCode, provider.APIError(msg, res.Status), wait) {
@@ -1604,10 +1619,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		}
 		hw.settle()
 		// Check if the rule has RetryOn502 set
-		retryOn502 := false
-		if tr != nil && tr.Rule != nil {
-			retryOn502 = tr.Rule.RetryOn502
-		}
+		retryOn502 := tr != nil && tr.Rule != nil && tr.Rule.RetryOn502
 		if hw.mayAskAgain() && hw.failure != 0 && !hw.refused && codexBusy(hw.failure, hw.errBody(), retryOn502) && r.Context().Err() == nil {
 			// the backend too busy for the turn, said on its stream before
 			// any of the reply (#1418)
@@ -2204,6 +2216,22 @@ func hopHeader(k string) bool {
 	return false
 }
 
+// codexSignInHeader says a header of the request is the sign-in's own, or
+// what holds for the account that sign-in is for alone, and not what the
+// backend reads a turn by: the credential, Codex's device attestation (its
+// own sign-in's), x-openai-codex-luna-reserve, which says Codex's own plan's
+// allowance is used up (another account's may not be), and x-codex-turn-state,
+// the backend's routing of the turn for that account.
+//
+// They go with the sign-in that is used — the account's, when an account
+// signs, the caller's own, when the caller signs for itself — so they are
+// never the caller's own identity to be taken away (codexCallerHeader).
+func codexSignInHeader(k string) bool {
+	k = strings.ToLower(k)
+	return strings.Contains(k, "authorization") || k == "x-oai-attestation" ||
+		k == "x-openai-codex-luna-reserve" || k == "x-codex-turn-state"
+}
+
 // codexHeader is one of the headers Codex tells the ChatGPT backend about
 // a request by, which go on with it when a pool account signs it as they
 // do when Codex's own sign-in does (codexUpstream): x-openai-subagent (a
@@ -2211,13 +2239,10 @@ func hopHeader(k string) bool {
 // x-codex-turn-metadata, its installation, window and parent thread, and
 // the session. Never a sign-in: the account's own goes in its place, and
 // Codex's device attestation is its own sign-in's. Nor what holds for
-// Codex's own account alone: x-openai-codex-luna-reserve, which says its
-// plan's allowance is used up (another account's may not be), and
-// x-codex-turn-state, the backend's routing of the turn for that account.
+// Codex's own account alone (codexSignInHeader).
 func codexHeader(k string) bool {
 	k = strings.ToLower(k)
-	if strings.Contains(k, "authorization") || k == "x-oai-attestation" ||
-		k == "x-openai-codex-luna-reserve" || k == "x-codex-turn-state" {
+	if codexSignInHeader(k) {
 		return false
 	}
 	switch k {
@@ -2420,6 +2445,14 @@ func (s *Server) askCodexList(rctx context.Context, h http.Header, query string,
 		return
 	}
 	copyHeaders(req.Header, h)
+	// the list is the backend's own, asked for the account: it goes as a
+	// Codex client, and a caller that is not one does not name itself on it
+	if !fromCodex(h) {
+		sanitizeNonCodexHeaders(req.Header)
+	}
+	// a request that named no client of its own goes as a Codex client,
+	// never with Go's default User-Agent
+	codexIdentityFor(req)
 	// the whole list, shared by every caller, whatever one of them had
 	for _, k := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
 		req.Header.Del(k)

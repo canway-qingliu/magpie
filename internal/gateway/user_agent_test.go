@@ -253,3 +253,39 @@ func TestRemoteMagpieRelaysUserAgent(t *testing.T) {
 		t.Errorf("a vendor was sent %s: %v", ClientUAHeader, v.leaked)
 	}
 }
+
+// A request to a vendor that names no client of its own goes with
+// magpie's own name, never with Go's default ("Go-http-client/1.1"),
+// which says what magpie is written in. A request that names one keeps
+// that name.
+func TestVendorRequestWithoutUAGoesAsMagpie(t *testing.T) {
+	var uas []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uas = append(uas, r.UserAgent())
+	}))
+	defer srv.Close()
+	c := &http.Client{Transport: upstreamTransport()}
+	for _, ua := range []string{"", "SomeAgent/1.0"} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		res, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+	}
+	want := []string{"magpie/" + Version, "SomeAgent/1.0"}
+	if len(uas) != len(want) {
+		t.Fatalf("%d calls went out: %v", len(uas), uas)
+	}
+	for i, ua := range uas {
+		if ua != want[i] {
+			t.Errorf("call %d went with User-Agent %q, want %q", i, ua, want[i])
+		}
+	}
+}

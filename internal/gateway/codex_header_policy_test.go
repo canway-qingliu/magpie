@@ -1,0 +1,314 @@
+package gateway
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/yetone/magpie/internal/provider"
+)
+
+// The two lists that say which of the caller's headers go to the ChatGPT
+// backend answer about a header the same way: the backend's vocabulary
+// about a turn (codexHeader) and the sign-in's own headers
+// (codexSignInHeader). A header in both would be taken away on the route
+// where the caller signs for itself and kept on the route where an
+// account signs, and the two routes would differ about it without
+// anyone saying so.
+func TestCodexHeaderListsApart(t *testing.T) {
+	for _, h := range []string{
+		"authorization", "x-oai-attestation", "x-openai-codex-luna-reserve",
+		"x-codex-turn-state", "x-openai-subagent", "x-openai-memgen-request",
+		"x-codex-turn-metadata", "x-codex-installation-id", "version",
+		"session-id", "thread-id", "session_id", "conversation_id",
+		"x-client-request-id", "originator", "user-agent", "accept",
+		"content-type", "chatgpt-account-id", "x-magpie-session",
+	} {
+		if codexHeader(h) && codexSignInHeader(h) {
+			t.Errorf("%s is a turn header and a sign-in header at once", h)
+		}
+	}
+}
+
+// What of a caller's request reaches the ChatGPT backend, header by
+// header: the backend's vocabulary about a turn and the caller's own name
+// are taken away for a caller that is not Codex, the sign-in's own
+// headers and everything else stay.
+func TestSanitizeNonCodexHeadersTable(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		kept bool
+	}{
+		{"x-openai-subagent", false},
+		{"x-openai-memgen-request", false},
+		{"x-openai-internal-codex-responses-lite", true},
+		{"x-openai-codex-luna-reserve", true},
+		{"x-codex-turn-metadata", false},
+		{"x-codex-installation-id", false},
+		{"x-codex-turn-state", true},
+		{"x-oai-attestation", true},
+		{"session-id", false},
+		{"thread-id", false},
+		{"session_id", false},
+		{"conversation_id", false},
+		{"x-client-request-id", false},
+		{"x-magpie-session", false},
+		{"authorization", true},
+		{"chatgpt-account-id", true},
+		{"accept", true},
+		{"content-type", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := http.Header{}
+			h.Set(tt.name, "value")
+			sanitizeNonCodexHeaders(h)
+			got := h.Get(tt.name)
+			if tt.kept && got != "value" {
+				t.Errorf("%s was taken away from the request", tt.name)
+			}
+			if !tt.kept && got != "" {
+				t.Errorf("%s reached the backend as %q", tt.name, got)
+			}
+		})
+	}
+}
+
+// A caller's own name is taken away and Codex's is put on: the request is
+// for a Codex model, and the backend reads a request that names a Codex
+// client as one.
+func TestSanitizeNonCodexHeadersGivesCodexsName(t *testing.T) {
+	h := http.Header{}
+	h.Set("User-Agent", "SomeOtherApp/1.2")
+	h.Set("Originator", "some-other-app")
+	h.Set("version", "1.2.3")
+	sanitizeNonCodexHeaders(h)
+	if got := h.Get("User-Agent"); !strings.HasPrefix(got, "codex_cli_rs/") {
+		t.Errorf("User-Agent = %q, want Codex's own", got)
+	}
+	if got := h.Get("Originator"); got != "codex_cli_rs" {
+		t.Errorf("Originator = %q, want Codex's own", got)
+	}
+	if got := h.Get("version"); got == "" || got == "1.2.3" {
+		t.Errorf("version = %q, want Codex's own", got)
+	}
+}
+
+// A turn from a caller that is not Codex, sent on the caller's own
+// sign-in: the caller's client, terminal and Codex session are taken away
+// and the request goes as a Codex client, while the sign-in the request is
+// sent with stays.
+func TestNonCodexTurnReachesOpenAIWithoutItsCodexHeaders(t *testing.T) {
+	codexSignedIn(t)
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		w.WriteHeader(429)
+		io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	req.Header.Set("User-Agent", "SomeOtherApp/1.2")
+	req.Header.Set("Originator", "some-other-app")
+	req.Header.Set("session-id", "client-session")
+	req.Header.Set("x-client-request-id", "client-req-1")
+	req.Header.Set("x-openai-subagent", "review")
+	req.Header.Set("x-codex-turn-metadata", `{"turn_id":"t1"}`)
+	req.Header.Set("x-codex-turn-state", "state-1")
+	req.Header.Set("x-openai-codex-luna-reserve", "true")
+	req.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+	req.Header.Set("version", "0.158.0")
+	req.Header.Set("x-magpie-session", "magpie-1")
+	s.Handler().ServeHTTP(rec, req)
+	if len(heads) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	h := heads[0]
+	for _, name := range []string{
+		"session-id", "x-client-request-id", "x-openai-subagent",
+		"x-codex-turn-metadata", "x-magpie-session",
+	} {
+		if got := h.Get(name); got != "" {
+			t.Errorf("%s reached OpenAI as %q", name, got)
+		}
+	}
+	if got := h.Get("User-Agent"); !strings.HasPrefix(got, "codex_cli_rs/") {
+		t.Errorf("User-Agent = %q, want Codex's own", got)
+	}
+	if got := h.Get("Originator"); got != "codex_cli_rs" {
+		t.Errorf("Originator = %q, want Codex's own", got)
+	}
+	if got := h.Get("version"); got == "" || got == "0.158.0" {
+		t.Errorf("version = %q, want Codex's own", got)
+	}
+	if got := h.Get("Authorization"); got != "Bearer chatgpt-token" {
+		t.Errorf("Authorization = %q, want the caller's own sign-in", got)
+	}
+	if got := h.Get("x-codex-turn-state"); got != "state-1" {
+		t.Errorf("x-codex-turn-state = %q, want the account's own routing", got)
+	}
+	if got := h.Get("x-openai-codex-luna-reserve"); got != "true" {
+		t.Errorf("x-openai-codex-luna-reserve = %q, want the account's own plan", got)
+	}
+	if got := h.Get("X-OpenAI-Internal-Codex-Responses-Lite"); got != "true" {
+		t.Errorf("X-OpenAI-Internal-Codex-Responses-Lite = %q, want the request's own", got)
+	}
+}
+
+// A turn from Codex itself, on its own sign-in: it is relayed as it came,
+// the headers the backend reads a Codex turn by included.
+func TestCodexTurnReachesOpenAIAsItCame(t *testing.T) {
+	codexSignedIn(t)
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		w.WriteHeader(429)
+		io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("User-Agent", "codex_cli_rs/0.163.0 (Mac OS 27.0.1; arm64) Terminal/455")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("session-id", "codex-session")
+	req.Header.Set("x-openai-subagent", "review")
+	req.Header.Set("x-codex-turn-metadata", `{"turn_id":"t1"}`)
+	s.Handler().ServeHTTP(rec, req)
+	if len(heads) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	h := heads[0]
+	for name, want := range map[string]string{
+		"User-Agent":            "codex_cli_rs/0.163.0 (Mac OS 27.0.1; arm64) Terminal/455",
+		"Originator":            "codex_cli_rs",
+		"session-id":            "codex-session",
+		"x-openai-subagent":     "review",
+		"x-codex-turn-metadata": `{"turn_id":"t1"}`,
+	} {
+		if got := h.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// A turn from Codex itself, sent on one of magpie's accounts: the account
+// signs it, and the request keeps the User-Agent the caller sent — the
+// client's own name, its terminal and its system, with the version in it
+// never older than the one the account signs as — and the client's own
+// originator.
+func TestCodexPoolKeepsTheClientsUserAgent(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	var uas, originators []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		uas = append(uas, r.Header.Get("User-Agent"))
+		originators = append(originators, r.Header.Get("originator"))
+		w.WriteHeader(429)
+		io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("Originator", "Codex Desktop")
+	req.Header.Set("User-Agent", "Codex Desktop/0.162.3 (Windows 10.0.26100; x86_64) unknown")
+	s.Handler().ServeHTTP(rec, req)
+	if len(uas) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	got := uas[0]
+	if !strings.HasPrefix(got, "Codex Desktop/") || !strings.Contains(got, "(Windows 10.0.26100; x86_64)") {
+		t.Errorf("the turn went with User-Agent %q, want the client's own", got)
+	}
+	if got := originators[0]; got != "Codex Desktop" {
+		t.Errorf("the turn went with originator %q, want the client's own", got)
+	}
+}
+
+// A request to the ChatGPT backend that came with no User-Agent of its
+// own goes out as a Codex client: Go's own default ("Go-http-client/1.1")
+// says what magpie is written in, and a vendor whose terms magpie is
+// careful with has no use for that.
+func TestCodexRequestWithoutUAGoesAsCodex(t *testing.T) {
+	codexSignedIn(t)
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		io.WriteString(w, `{"models":[]}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", CodexPath+"/models", nil)
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("chatgpt-account-id", "acct-1")
+	s.Handler().ServeHTTP(rec, req)
+	if len(heads) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := heads[0].Get("User-Agent"); !strings.HasPrefix(got, "codex_cli_rs/") {
+		t.Errorf("the model list went with User-Agent %q, want Codex's own", got)
+	}
+}
+
+// A caller that names itself Codex by its originator alone, and sends no
+// User-Agent of its own, keeps that name and is given Codex's User-Agent:
+// the backend is not told which client magpie is written in.
+func TestCodexTurnWithoutUAGoesAsCodex(t *testing.T) {
+	codexSignedIn(t)
+	var heads []http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		heads = append(heads, r.Header.Clone())
+		w.WriteHeader(429)
+		io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}`)
+	}))
+	t.Cleanup(up.Close)
+	was := provider.CodexBase
+	provider.CodexBase = up.URL + "/backend-api/codex"
+	t.Cleanup(func() { provider.CodexBase = was })
+
+	s := New()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", CodexPath+"/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer chatgpt-token")
+	req.Header.Set("Originator", "codex_cli_rs")
+	s.Handler().ServeHTTP(rec, req)
+	if len(heads) == 0 {
+		t.Fatalf("no request went upstream: %d %s", rec.Code, rec.Body.String())
+	}
+	h := heads[0]
+	if got := h.Get("User-Agent"); !strings.HasPrefix(got, "codex_cli_rs/") {
+		t.Errorf("the turn went with User-Agent %q, want Codex's own", got)
+	}
+	if got := h.Get("Originator"); got != "codex_cli_rs" {
+		t.Errorf("Originator = %q, want the caller's own", got)
+	}
+}

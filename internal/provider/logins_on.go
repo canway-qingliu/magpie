@@ -167,7 +167,7 @@ func (p Provider) alsoOn() []Provider {
 			a.token = func(context.Context) (string, error) { return claudeSavedDir(user) }
 		}
 		if agent == "codex" {
-			a.sign = codexSign(func(ctx context.Context) (string, string, error) { return savedLoginToken(ctx, agent, user) })
+			a.sign = codexSignFor(codexProfileName(agent, user), func(ctx context.Context) (string, string, error) { return savedLoginToken(ctx, agent, user) })
 			a.renew = func(ctx context.Context, stale string) (string, string, error) {
 				return renewSavedLoginFrom(ctx, agent, user, stale)
 			}
