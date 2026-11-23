@@ -4,6 +4,7 @@ WORKDIR /src
 
 COPY go.mod go.sum ./
 COPY third_party ./third_party
+ARG GOPROXY
 RUN go mod download
 
 COPY . .
