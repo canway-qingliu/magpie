@@ -10,7 +10,7 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.5.0
 	github.com/coder/websocket v1.8.14
 	github.com/dlclark/regexp2 v1.11.5
-	github.com/dop251/goja v0.0.0-20261019191939-392f3bef4465
+	github.com/dop251/goja v0.0.0-20261122185237-35fdc4b88e39
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gen2brain/h265 v0.2.4
 	github.com/go-ole/go-ole v1.3.0
@@ -18,7 +18,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.3
 	github.com/pelletier/go-toml/v2 v2.2.4
-	github.com/refraction-networking/utls v1.8.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/sigstore/sigstore-go v1.1.4
 	github.com/tidwall/gjson v1.19.0
@@ -39,7 +38,6 @@ require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/MoeForge/moego v0.1.0-alpha.1 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
-	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -54,7 +52,7 @@ require (
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467 // indirect
 	github.com/digitorus/pkcs7 v0.0.0-20230818184609-3a137a874352 // indirect
 	github.com/digitorus/timestamp v0.0.0-20231217203849-220c5c2851b7 // indirect
-	github.com/dlclark/regexp2/v2 v2.8.1 // indirect
+	github.com/dlclark/regexp2/v2 v2.11.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

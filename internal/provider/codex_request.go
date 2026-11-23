@@ -18,6 +18,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/lazyre"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -27,10 +28,25 @@ import (
 // /codex/responses answers 404 "Model not found" for a model its own
 // /codex/models lists.
 
+// codexOriginator is the originator every request Codex CLI makes carries.
+const codexOriginator = "codex_cli_rs"
+
 // codexSign authenticates a request to the ChatGPT backend with the
 // tokens token hands out, and says it comes from Codex CLI.
 func codexSign(token func(context.Context) (tok, accountID string, err error)) func(context.Context, *http.Request, []byte) error {
+	return codexSignFor("", token)
+}
+
+// codexSignFor is codexSign for the account named account, whose TLS
+// identity the request takes (netproxy.WithTLSProfile): two accounts of
+// one subscription reach the backend as two clients, apart in what their
+// hellos offer. Its "" is the account magpie is signed in to first, which
+// keeps the profile every request took before an account could name one.
+func codexSignFor(account string, token func(context.Context) (tok, accountID string, err error)) func(context.Context, *http.Request, []byte) error {
 	return func(ctx context.Context, req *http.Request, body []byte) error {
+		if account != "" {
+			*req = *req.WithContext(netproxy.WithTLSProfile(req.Context(), account))
+		}
 		tok, accountID, err := token(ctx)
 		if err != nil {
 			return err
@@ -54,6 +70,14 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 	}
 }
 
+// codexProfileName names a saved account of agent for its TLS identity:
+// its user as the accounts list tells two apart, in lower case as the
+// account is keyed elsewhere (accountKey) — a second Team seat of an
+// email being "email · Team · <workspace>" (#1424).
+func codexProfileName(agent, user string) string {
+	return agent + "/" + accountKey(user)
+}
+
 // codexClientHeaders are what every request Codex CLI makes carries,
 // whatever it is for: its originator and its User-Agent, naming Codex of
 // version ver (codex-rs login/src/auth/default_client.rs default_headers,
@@ -62,17 +86,87 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 // (/wham/usage, the reset credits, the token refresh) went with Go's
 // User-Agent and no originator, unlike any request Codex makes.
 //
-// Which Codex that is is settings.CodexClient's: Codex CLI by default, the
-// Codex app when the user chose it (ouhthuo on X: the backend routes some
-// models by the client's originator).
+// A request that came from a Codex client keeps that client's own name: its
+// User-Agent as it came, with the version in it never older than ver, and
+// its originator as it came. A request from anyone else is named as Codex
+// of version ver, which is what magpie can vouch for.
+//
+// The one exception is the user's own choice of client (settings.CodexClient:
+// the Codex app): that names the client every request goes as, and stands
+// over the client's own name.
 func codexClientHeaders(h http.Header, ver string) {
 	if CodexClient() == "desktop" {
 		h.Set("originator", codexDesktopOriginator)
 		h.Set("User-Agent", codexDesktopUserAgent(ver))
 		return
 	}
-	h.Set("originator", "codex_cli_rs")
-	h.Set("User-Agent", codexUserAgent(ver))
+	if h.Get("originator") == "" {
+		h.Set("originator", codexOriginator)
+	}
+	h.Set("User-Agent", codexUserAgentFor(h.Get("User-Agent"), ver))
+}
+
+// CodexClientIdentity puts on h the identity of a Codex client, where the
+// request names none: its originator, its User-Agent and the version that
+// go with them.
+//
+// What a request already carries of it is left as it came: a Codex
+// client's own User-Agent is the original one, and the version it named is
+// its own.
+//
+// Every request to the backend is a request for a Codex model, whoever made
+// it: the backend serves Codex's clients, and gates its newest models on a
+// User-Agent that names one.
+func CodexClientIdentity(h http.Header) {
+	ver := codexVersion()
+	if h.Get("User-Agent") == "" {
+		h.Set("User-Agent", codexUserAgent(ver))
+	}
+	if h.Get("originator") == "" {
+		h.Set("originator", codexOriginator)
+	}
+	if h.Get("version") == "" {
+		h.Set("version", ver)
+	}
+}
+
+// codexUAVersionRE finds the version in a Codex client's User-Agent
+// ("codex_cli_rs/0.161.0 (Mac OS 26.6.0; arm64) ghostty/1.2.0" — the first
+// one, which is the client's, not the system's).
+var codexUAVersionRE = lazyre.New(`\d+\.\d+\.\d+(\.\d+)*`)
+
+// codexUserAgentFor is the User-Agent a request to the ChatGPT backend goes
+// with: the Codex client's own, when it named one, with the version in it
+// never older than ver, or Codex's own, naming Codex of version ver.
+//
+// The version is raised where it is older: the backend serves a model only
+// to a client new enough for it, and a request that says it is an older
+// Codex is refused the newest models ("The 'gpt-6.1-sol' model is not
+// supported when using Codex with a ChatGPT account").
+func codexUserAgentFor(ua, ver string) string {
+	if ua == "" || ver == "" || !codexOwnUA(ua) {
+		return codexUserAgent(ver)
+	}
+	v := codexUAVersionRE.FindString(ua)
+	if v == "" {
+		return ua
+	}
+	if compareClaudeVersion(v, ver) >= 0 {
+		return ua
+	}
+	return strings.Replace(ua, v, ver, 1)
+}
+
+// codexOwnUA says a User-Agent is a Codex client's own, and not an app's
+// that runs one: the names Codex answers to (its CLI, its desktop app, its
+// ACP adapter) and the one a hosted Codex answers to (VS Code's agent
+// host). An app that runs Codex under a name it uses for more than that is
+// not told apart this way.
+func codexOwnUA(ua string) bool {
+	ua = strings.ToLower(strings.TrimSpace(ua))
+	return strings.HasPrefix(ua, "codex") ||
+		strings.HasPrefix(ua, "acp-extension-codex") ||
+		strings.HasPrefix(ua, "vscode_agent_host")
 }
 
 // codexDesktopOriginator is the originator the Codex app gives

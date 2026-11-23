@@ -20,6 +20,18 @@ import (
 // system's roots, but for a test trusting its own server.
 var upstreamTLS *tls.Config
 
+func init() {
+	netproxy.HTTP1TLSConfig = codexTLSConfig
+	netproxy.TLSProfile = codexTLSConfigFor
+}
+
+func vendorTLSConfig() *tls.Config {
+	if upstreamTLS == nil {
+		return nil
+	}
+	return upstreamTLS.Clone()
+}
+
 // upstreamTransport is the gateway's transport to the vendors: a provider
 // with a proxy of its own is sent through a transport kept for that proxy
 // (#237), and the ChatGPT backend over HTTP/1.1 (netproxy.HTTP1), a
@@ -35,12 +47,16 @@ var upstreamTLS *tls.Config
 // but for a drawing, which an images API answers only once it has drawn:
 // it goes through a transport of its own that waits as long as Settings'
 // Image generation timeout gives it (drawWithin), up to 60 minutes.
+//
+// A request that names no client of its own goes with magpie's own name
+// (namedUA): Go's default would say what magpie is written in.
 func upstreamTransport() http.RoundTripper {
-	return drawsApart{
+	return namedUA{drawsApart{
 		any:     codexSocket{replayable{freshAfterRegion(stallGuard{netproxy.Dispatch(vendorTransport(upstreamHeaderWait))})}},
 		draws:   replayable{freshAfterRegion(stallGuard{netproxy.Dispatch(vendorTransport(0))})},
 		uploads: codexSocket{replayable{freshAfterRegion(stallGuard{netproxy.Dispatch(uploadTransport(upstreamHeaderWait))})}},
 		slow:    new(atomic.Int64),
+	},
 	}
 }
 
@@ -80,19 +96,10 @@ func plainVendorTransport(wait time.Duration) *http.Transport {
 	return &http.Transport{
 		Proxy:                 netproxy.Func,
 		ResponseHeaderTimeout: wait,
-		// Codex CLI uses a larger connection pool, and a TLS and
-		// HTTP/2 fingerprint near its rustls one, so a vendor's bot
-		// shield doesn't single magpie's Go transport out.
-		MaxIdleConnsPerHost: 16,
-		IdleConnTimeout:     120 * time.Second,
-		ForceAttemptHTTP2:   true,
-		TLSClientConfig:     codexTLSConfig(),
-		HTTP2:               codexHTTP2Config(),
-		// Codex CLI's TCP keep-alive
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       vendorTLSConfig(),
 	}
 }
 

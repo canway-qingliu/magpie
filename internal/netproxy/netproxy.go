@@ -13,6 +13,7 @@ package netproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -93,6 +94,8 @@ func Func(req *http.Request) (*url.URL, error) {
 
 type choiceKey struct{}
 
+type tlsProfileKey struct{}
+
 type holdKey struct{}
 
 // Hold is ctx for work magpie was not asked to do and must not send: no
@@ -125,9 +128,10 @@ func Held(ctx context.Context) error {
 // it was made under. A provider's leave not to check its certificate
 // (WithUncheckedTLS) goes the same way: it is the outer provider's, and
 // dropped here, and so is its ask for HTTP/1.1 (WithHTTP1), its own
-// TLS identity (WithClientCert) and its host rules (WithResolve).
+// TLS identity (WithClientCert), its host rules (WithResolve) and the
+// account whose TLS identity it wanted (WithTLSProfile).
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil && clientCertOf(ctx) == nil && resolveOf(ctx) == nil {
+	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil && clientCertOf(ctx) == nil && resolveOf(ctx) == nil && tlsProfileOf(ctx) == "" {
 		return ctx
 	}
 	ctx = context.WithValue(ctx, choiceKey{}, choice)
@@ -142,6 +146,9 @@ func With(ctx context.Context, choice string) context.Context {
 	}
 	if resolveOf(ctx) != nil {
 		ctx = context.WithValue(ctx, resolveKey{}, map[string][]string(nil))
+	}
+	if tlsProfileOf(ctx) != "" {
+		ctx = context.WithValue(ctx, tlsProfileKey{}, "")
 	}
 	return ctx
 }
@@ -210,6 +217,49 @@ var HTTP1 func(u *url.URL) bool
 // leaves every request to its transport.
 var Elsewhere func(req *http.Request) (res *http.Response, ok bool, err error)
 
+// HTTP1TLSConfig is the TLS profile for requests HTTP1 selects — the
+// ChatGPT backend's HTTP/1.1 route, which carries Codex's TLS shape. It is
+// evaluated when that route's transport is made, so tests can still supply
+// upstreamTLS before the first request. An HTTP/1.1 route from another
+// source (a provider's own WithHTTP1, or an HTTP/2 connection that broke)
+// keeps the base transport's TLS config: the profile is Codex's, and is
+// not put on another vendor's connections.
+var HTTP1TLSConfig func() *tls.Config
+
+// TLSProfile picks the TLS identity of requests HTTP1 selects: an account
+// says which one goes on its behalf, and the same account says the same
+// one every time. Its "" is the profile HTTP1TLSConfig hands out, the one
+// every request takes when no account names itself.
+//
+// Go's crypto/tls takes the profile as a list of cipher suites and curves
+// chosen from its own preference order, so what tells two profiles apart
+// is which ones are in each, never the order they are written in. A TLS
+// Profile that names the same set as another has the same ClientHello as
+// it.
+var TLSProfile func(account string) *tls.Config
+
+// WithTLSProfile is ctx for requests made on behalf of the account named,
+// whose TLS identity those requests take (TLSProfile). With and a
+// provider's leave to check no certificate drop it.
+func WithTLSProfile(ctx context.Context, account string) context.Context {
+	if account = strings.TrimSpace(account); account == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, tlsProfileKey{}, account)
+}
+
+func tlsProfileOf(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	p, _ := ctx.Value(tlsProfileKey{}).(string)
+	return p
+}
+
+// TLSProfileOf is the account whose TLS identity ctx's requests take
+// (WithTLSProfile), "" when it names none.
+func TLSProfileOf(ctx context.Context) string { return tlsProfileOf(ctx) }
+
 // Dispatch is a RoundTripper sending a request through base, unless its
 // context names a provider's own proxy (With): then through a clone of
 // base kept for that proxy alone. Connections are so reused among the
@@ -248,11 +298,23 @@ type dispatch struct {
 // provider's own proxy, HTTP/1.1 only, the host:port whose certificate is
 // not checked, or any of them together.
 type route struct {
-	choice    string
-	h1        bool
-	unchecked string
-	client    string // clientRoute
-	resolve   string // resolveRoute
+	choice string
+	h1     bool
+	// profile says the route is one HTTP1 itself selected (the ChatGPT
+	// backend's): h1 is also true, and the transport takes HTTP1TLSConfig
+	// and drops Go's automatic gzip header, both Codex's shape. An h1
+	// route from another source keeps the base transport's TLS config and
+	// its compression.
+	profile bool
+	// tlsProfile names the account whose TLS identity the ChatGPT
+	// backend's route takes (WithTLSProfile): two accounts of one
+	// subscription are two routes, and the connections they pool are never
+	// each other's. Its "" is HTTP1TLSConfig's profile, the one every
+	// request took before an account could name its own.
+	tlsProfile string
+	unchecked  string
+	client     string // clientRoute
+	resolve    string // resolveRoute
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -264,7 +326,7 @@ func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
 	if d.moved() {
 		d.CloseIdleConnections()
 	}
-	r := route{choice: Resolve(choiceOf(req.Context())), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req), client: clientRoute(req), resolve: resolveRoute(req)}
+	r := routeOf(req)
 	t := d.base
 	if r != (route{}) {
 		t = d.transport(r)
@@ -325,6 +387,18 @@ func Watch() func() bool {
 	}
 }
 
+// routeOf is req's route: what its transport needs of it other than base.
+func routeOf(req *http.Request) route {
+	asked := HTTP1 != nil && HTTP1(req.URL)
+	r := route{choice: Resolve(choiceOf(req.Context())), h1: asked || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), profile: asked, unchecked: uncheckedHost(req), client: clientRoute(req), resolve: resolveRoute(req)}
+	if asked {
+		// only the ChatGPT backend's route has a TLS identity an account
+		// may name: another provider's request keeps its transport
+		r.tlsProfile = tlsProfileOf(req.Context())
+	}
+	return r
+}
+
 func (d *dispatch) transport(r route) *http.Transport {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -351,6 +425,14 @@ func (d *dispatch) transport(r route) *http.Transport {
 		}
 	}
 	if r.h1 {
+		if r.profile {
+			// the account's own identity when it named one, else the one
+			// every request takes
+			if config := tlsProfileConfig(r.tlsProfile); config != nil {
+				t.TLSClientConfig = config
+			}
+			t.DisableCompression = true
+		}
 		http1Only(t)
 	}
 	if r.unchecked != "" {
@@ -373,6 +455,20 @@ func (d *dispatch) transport(r route) *http.Transport {
 	d.own[r] = t
 	observe(Event{Kind: EventTransportMade, Route: r.class()})
 	return t
+}
+
+// tlsProfileConfig is the TLS identity of the account named, the one
+// HTTP1TLSConfig hands out when it names none.
+func tlsProfileConfig(account string) *tls.Config {
+	if account != "" && TLSProfile != nil {
+		if config := TLSProfile(account); config != nil {
+			return config
+		}
+	}
+	if HTTP1TLSConfig != nil {
+		return HTTP1TLSConfig()
+	}
+	return nil
 }
 
 // http1Only has t, a clone, speak HTTP/1.1 only, and its TLS hello offer
