@@ -1434,9 +1434,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				msg, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 				res.Body.Close()
 				res.Body = io.NopCloser(bytes.NewReader(msg))
-				// Check if the rule has RetryOn502 set
-				retryOn502 := tr != nil && tr.Rule != nil && tr.Rule.RetryOn502
-				if codexBusy(res.StatusCode, msg, retryOn502) {
+				if codexBusy(res.StatusCode, msg) {
 					if wait, ok := passing(res.StatusCode, res.Header, msg, busyAgain); ok {
 						if !askAgain(res.StatusCode, provider.APIError(msg, res.Status), wait) {
 							return
@@ -1508,8 +1506,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			// its credits and resets looked at above, a 429 that names
 			// when the account is back holds it till then (codexHolds)
 			noteCodexHold(holdKey, res.StatusCode, res.Header, msg, relayOnCredits(on))
-			retryOn502 := tr != nil && tr.Rule != nil && tr.Rule.RetryOn502
-			if overload && codexBusy(res.StatusCode, msg, retryOn502) && s.codexFallsBack(r, body) {
+			if overload && codexBusy(res.StatusCode, msg) && s.codexFallsBack(r, body) {
 				// still too busy once asked again: the fallbacks answer
 				said := provider.APIError(msg, res.Status)
 				handOn(res.StatusCode, said, 0)
@@ -1618,9 +1615,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			break
 		}
 		hw.settle()
-		// Check if the rule has RetryOn502 set
-		retryOn502 := tr != nil && tr.Rule != nil && tr.Rule.RetryOn502
-		if hw.mayAskAgain() && hw.failure != 0 && !hw.refused && codexBusy(hw.failure, hw.errBody(), retryOn502) && r.Context().Err() == nil {
+		if hw.mayAskAgain() && hw.failure != 0 && !hw.refused && codexBusy(hw.failure, hw.errBody()) && r.Context().Err() == nil {
 			// the backend too busy for the turn, said on its stream before
 			// any of the reply (#1418)
 			said := "OpenAI: " + string(hw.errBody())
@@ -1735,17 +1730,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 // (edgeSaidDrop, codexDropped), and a small one's goes to Codex as the
 // 503 it asks again for (TestCodexResetJudgedByTheBytesSent). A 429 is
 // the account's allowance or rate, which isn't outwaited in seconds.
-//
-// When the group's rule has RetryOn502 set, a 502 Bad Gateway is also
-// considered busy, so the same account is retried instead of failing over
-// to the next one.
-func codexBusy(status int, msg []byte, retryOn502 bool) bool {
+func codexBusy(status int, msg []byte) bool {
 	if status == http.StatusTooManyRequests || edgeSaidDrop(status, msg) || codexReset(status, msg) {
 		return false
-	}
-	// If RetryOn502 is set, treat 502 as busy so the same account is retried
-	if retryOn502 && status == http.StatusBadGateway {
-		return true
 	}
 	return busy(status, msg)
 }
